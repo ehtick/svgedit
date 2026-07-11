@@ -89,7 +89,7 @@ const updateTransformList = (svgRoot, element, dx, dy) => {
   if (!tlist) { return }
   if (tlist.numberOfItems) {
     const firstItem = tlist.getItem(0)
-    if (firstItem.type === 2) { // SVG_TRANSFORM_TRANSLATE = 2
+    if (firstItem.type === SVGTransform.SVG_TRANSFORM_TRANSLATE) {
       tlist.replaceItem(xform, 0)
     } else {
       tlist.insertItemBefore(xform, 0)
@@ -97,6 +97,25 @@ const updateTransformList = (svgRoot, element, dx, dy) => {
   } else {
     tlist.appendItem(xform)
   }
+}
+
+// Consolidate an element's current transform list into a single matrix,
+// returning an undo command that restores `oldTransform`. Used for groups
+// (whose transform must stay on the group rather than be flattened into
+// their children) and as a fallback when recalculateDimensions() doesn't
+// recognize the transform-list shape a drag interaction left behind.
+const consolidateTransform = (svgRoot, elem, tlist, oldTransform) => {
+  const consolidatedMatrix = transformListToTransform(tlist).matrix
+
+  while (tlist.numberOfItems > 0) {
+    tlist.removeItem(0)
+  }
+
+  const newTransform = svgRoot.createSVGTransform()
+  newTransform.setMatrix(consolidatedMatrix)
+  tlist.appendItem(newTransform)
+
+  return new ChangeElementCommand(elem, { transform: oldTransform })
 }
 
 /**
@@ -159,10 +178,16 @@ const mouseMoveEvent = (evt) => {
           svgCanvas.dragStartTransforms.set(selectedElement, selectedElement.getAttribute('transform') || '')
           const slist = getTransformList(selectedElement)
           if (!slist) { continue }
+          // The dummy must already be a translate (not the default identity
+          // matrix) so updateTransformList's `firstItem.type === 2` check
+          // recognizes and replaces it in place on the very first mousemove,
+          // instead of leaving it behind as a stray extra transform item.
+          const dummy = svgRoot.createSVGTransform()
+          dummy.setTranslate(0, 0)
           if (slist.numberOfItems) {
-            slist.insertItemBefore(svgRoot.createSVGTransform(), 0)
+            slist.insertItemBefore(dummy, 0)
           } else {
-            slist.appendItem(svgRoot.createSVGTransform())
+            slist.appendItem(dummy)
           }
         }
         svgCanvas.hasDragStartTransform = true
@@ -685,41 +710,43 @@ const mouseUpEvent = (evt) => {
             const tlist = getTransformList(elem)
             if (!tlist || tlist.numberOfItems === 0) return
 
-            // Get the transform from BEFORE the drag started
-            const oldTransform = svgCanvas.dragStartTransforms?.get(elem) || ''
+            // Get the transform from BEFORE this interaction started. `dragStartTransforms`
+            // is only populated for 'select'-mode (move) drags; 'resize'/'rotate' drags fall
+            // through to this same code with dragStartTransforms left null, so fall back to
+            // the value captured at mousedown via setStartTransform, which correctly reflects
+            // the prior transform (e.g. a matrix left by an earlier move) regardless of mode.
+            const oldTransform = svgCanvas.dragStartTransforms?.has(elem)
+              ? svgCanvas.dragStartTransforms.get(elem)
+              : (svgCanvas.getStartTransform() || '')
 
             // Check if the first transform is a translate (the drag transform we added)
             const firstTransform = tlist.getItem(0)
-            const hasDragTranslate = firstTransform.type === 2 // SVG_TRANSFORM_TRANSLATE
+            const hasDragTranslate = firstTransform.type === SVGTransform.SVG_TRANSFORM_TRANSLATE
 
-            // For groups, we always consolidate the transforms (recalculateDimensions returns null for groups)
+            // recalculateDimensions() returns null for groups (their transform must stay
+            // on the group itself), so consolidate those directly into one matrix. For
+            // every other element type, recalculateDimensions() already understands the
+            // translate/scale/translate shape produced by a resize (and plain translate
+            // from a move), and flattening into it keeps the shape's real geometry
+            // attributes (x/y/width/height/rx/ry/points/d/etc.) in sync - which is what
+            // drives the coordinate/size panel inputs and keeps stroke width from being
+            // visually distorted by a leftover scale matrix.
             const isGroup = elem.tagName === 'g' || elem.tagName === 'a'
 
-            // If element has 2+ transforms, or is a group with a drag translate, consolidate
-            if ((tlist.numberOfItems > 1 && hasDragTranslate) || (isGroup && hasDragTranslate)) {
-              const consolidatedMatrix = transformListToTransform(tlist).matrix
-
-              // Clear the transform list
-              while (tlist.numberOfItems > 0) {
-                tlist.removeItem(0)
-              }
-
-              // Add the consolidated matrix
-              const newTransform = svgCanvas.getSvgRoot().createSVGTransform()
-              newTransform.setMatrix(consolidatedMatrix)
-              tlist.appendItem(newTransform)
-
-              // Record the transform change for undo
-              batchCmd.addSubCommand(new ChangeElementCommand(elem, { transform: oldTransform }))
+            if (isGroup && hasDragTranslate) {
+              batchCmd.addSubCommand(consolidateTransform(svgCanvas.getSvgRoot(), elem, tlist, oldTransform))
               return
             }
 
-            // For non-group elements with simple transforms, try recalculateDimensions
             const cmd = svgCanvas.recalculateDimensions(elem)
             if (cmd) {
               batchCmd.addSubCommand(cmd)
+            } else if (tlist.numberOfItems > 1 && hasDragTranslate) {
+              // recalculateDimensions() didn't recognize this transform-list shape;
+              // fall back to consolidating into one matrix so the transform isn't lost.
+              batchCmd.addSubCommand(consolidateTransform(svgCanvas.getSvgRoot(), elem, tlist, oldTransform))
             } else {
-              // recalculateDimensions returned null
+              // recalculateDimensions returned null and there's nothing left to consolidate
               // Check if the transform actually changed and record it manually
               const newTransform = elem.getAttribute('transform') || ''
               if (newTransform !== oldTransform) {
