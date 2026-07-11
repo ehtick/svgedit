@@ -2,8 +2,11 @@ import SvgCanvas from '../../packages/svgcanvas/svgcanvas.js'
 
 // Regression test for https://github.com/SVG-Edit/svgedit/issues/1090:
 // moving a shape and then resizing it must not lose the move when the
-// resize is undone.
-describe('Issue 1090: move then resize then undo', function () {
+// resize is undone. Also covers https://github.com/SVG-Edit/svgedit/issues/1086:
+// resizing must flatten into the shape's real geometry attributes (so the
+// coordinate/size panel inputs stay in sync) instead of leaving a scale
+// transform matrix on the element.
+describe('Issue 1090/1086: move then resize then undo', function () {
   let svgCanvas
 
   beforeEach(() => {
@@ -98,9 +101,20 @@ describe('Issue 1090: move then resize then undo', function () {
       const resizeGrip = findResizeGrip()
       assert.ok(resizeGrip, 'found a resize grip element')
 
+      const afterMove = {}
+      for (const k of Object.keys(attrs)) afterMove[k] = elem.getAttribute(k)
+
       svgCanvas.mouseDownEvent(fakeEvt(100, 110, resizeGrip))
       svgCanvas.mouseMoveEvent(fakeEvt(130, 150, resizeGrip))
       svgCanvas.mouseUpEvent(fakeEvt(130, 150, resizeGrip))
+
+      const afterResize = {}
+      for (const k of Object.keys(attrs)) afterResize[k] = elem.getAttribute(k)
+
+      // The resize must flatten into the shape's real geometry attributes
+      // (issue #1086), not just leave a scale matrix on the element.
+      assert.notDeepEqual(afterResize, afterMove, `${tag}: resize should update geometry attrs, not just leave a transform`)
+      assert.ok(!elem.getAttribute('transform'), `${tag}: resize should not leave a leftover transform attribute`)
 
       // UNDO the resize
       svgCanvas.undoMgr.undo()
@@ -139,6 +153,7 @@ describe('Issue 1090: move then resize then undo', function () {
       const afterResize = {}
       for (const k of Object.keys(attrs)) afterResize[k] = elem.getAttribute(k)
       assert.notDeepEqual(afterResize, attrs, `${tag}: plain resize should update geometry attrs`)
+      assert.ok(!elem.getAttribute('transform'), `${tag}: resize should not leave a leftover transform attribute`)
     })
   }
 

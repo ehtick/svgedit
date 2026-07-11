@@ -704,11 +704,17 @@ const mouseUpEvent = (evt) => {
             const firstTransform = tlist.getItem(0)
             const hasDragTranslate = firstTransform.type === 2 // SVG_TRANSFORM_TRANSLATE
 
-            // For groups, we always consolidate the transforms (recalculateDimensions returns null for groups)
+            // recalculateDimensions() returns null for groups (their transform must stay
+            // on the group itself), so consolidate those directly into one matrix. For
+            // every other element type, recalculateDimensions() already understands the
+            // translate/scale/translate shape produced by a resize (and plain translate
+            // from a move), and flattening into it keeps the shape's real geometry
+            // attributes (x/y/width/height/rx/ry/points/d/etc.) in sync - which is what
+            // drives the coordinate/size panel inputs and keeps stroke width from being
+            // visually distorted by a leftover scale matrix.
             const isGroup = elem.tagName === 'g' || elem.tagName === 'a'
 
-            // If element has 2+ transforms, or is a group with a drag translate, consolidate
-            if ((tlist.numberOfItems > 1 && hasDragTranslate) || (isGroup && hasDragTranslate)) {
+            const consolidate = () => {
               const consolidatedMatrix = transformListToTransform(tlist).matrix
 
               // Clear the transform list
@@ -723,15 +729,22 @@ const mouseUpEvent = (evt) => {
 
               // Record the transform change for undo
               batchCmd.addSubCommand(new ChangeElementCommand(elem, { transform: oldTransform }))
+            }
+
+            if (isGroup && hasDragTranslate) {
+              consolidate()
               return
             }
 
-            // For non-group elements with simple transforms, try recalculateDimensions
             const cmd = svgCanvas.recalculateDimensions(elem)
             if (cmd) {
               batchCmd.addSubCommand(cmd)
+            } else if (tlist.numberOfItems > 1 && hasDragTranslate) {
+              // recalculateDimensions() didn't recognize this transform-list shape;
+              // fall back to consolidating into one matrix so the transform isn't lost.
+              consolidate()
             } else {
-              // recalculateDimensions returned null
+              // recalculateDimensions returned null and there's nothing left to consolidate
               // Check if the transform actually changed and record it manually
               const newTransform = elem.getAttribute('transform') || ''
               if (newTransform !== oldTransform) {
