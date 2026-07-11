@@ -1,5 +1,13 @@
 # SVG-Edit CHANGES
 
+## 7.4.2
+- Fix: undoing a resize that followed a move no longer reverts to the shape's creation-time position (#1090)
+- Fix: resizing a shape now flattens into its real geometry attributes instead of leaving a transform matrix, so coordinate/size panel inputs update and stroke width isn't distorted (#1086)
+- Fix: unit-suffixed attribute values (e.g. `font-size="10pt"`, `stroke-width="2px"`) are no longer truncated to a bare number (#949)
+- Fix: ungrouping imported SVG content now fully unwraps it in a single action, and the right-click Ungroup menu item is no longer disabled for it (#953)
+- Fix: reopening a gradient stop's color picker no longer stacks duplicate picker dialogs (#957)
+- Chore: update dependencies, resolve npm audit vulnerabilities in transitive dev dependencies
+
 ## 7.4.1
 - Fix: parent transform iteration and undo/redo for grouped elements
 - Fix: gradient inheritance, clipPath translation, blur filters, layer operations
