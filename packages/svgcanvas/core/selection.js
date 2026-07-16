@@ -11,6 +11,8 @@ import {
   getStrokedBBoxDefaultVisible
 } from './utilities.js'
 import {
+  isIdentity,
+  matrixMultiply,
   transformPoint,
   transformListToTransform,
   rectsIntersect,
@@ -19,8 +21,50 @@ import {
 import * as hstry from './history.js'
 import { getClosest } from '../common/util.js'
 
-const { BatchCommand } = hstry
+const { BatchCommand, ChangeElementCommand } = hstry
 let svgCanvas = null
+const NEAR_ZERO = 1e-10
+const TRANSFORM_GEOMETRY_ATTRS = [
+  'transform',
+  'x', 'y', 'width', 'height',
+  'cx', 'cy', 'r', 'rx', 'ry',
+  'x1', 'y1', 'x2', 'y2',
+  'points', 'd'
+]
+
+const normalizeRotationValue = (angle) => {
+  let normalized = Number.parseFloat(angle)
+  if (!Number.isFinite(normalized)) return 0
+  normalized %= 360
+  if (normalized > 180) normalized -= 360
+  if (normalized <= -180) normalized += 360
+  return Math.abs(normalized) < NEAR_ZERO ? 0 : normalized
+}
+
+const getCombinedRotationAngle = (tlist) => {
+  let angle = 0
+  for (let i = 0; i < tlist.numberOfItems; i++) {
+    const transform = tlist.getItem(i)
+    if (transform.type === SVGTransform.SVG_TRANSFORM_ROTATE) {
+      angle += transform.angle
+    }
+  }
+  return normalizeRotationValue(angle)
+}
+
+const getTransformGeometryValues = (elem) => {
+  const values = {}
+  TRANSFORM_GEOMETRY_ATTRS.forEach((attr) => {
+    values[attr] = elem.getAttribute(attr) || ''
+  })
+  return values
+}
+
+const hasTransformGeometryChange = (elem, oldValues) => {
+  return Object.entries(oldValues).some(([attr, oldValue]) => {
+    return (elem.getAttribute(attr) || '') !== oldValue
+  })
+}
 
 /**
  * @function module:selection.init
@@ -387,72 +431,62 @@ const prepareSvg = (newDoc) => {
 const setRotationAngle = (val, preventUndo) => {
   const selectedElements = svgCanvas.getSelectedElements()
   // ensure val is the proper type
-  val = Number.parseFloat(val)
+  val = normalizeRotationValue(val)
   const elem = selectedElements[0]
-  const oldTransform = elem.getAttribute('transform')
+  if (!elem) return
   const bbox = getBBox(elem)
+  if (!bbox) return
   const cx = bbox.x + bbox.width / 2
   const cy = bbox.y + bbox.height / 2
   const tlist = getTransformList(elem)
+  const currentAngle = getCombinedRotationAngle(tlist)
+  if (Math.abs(val - currentAngle) < NEAR_ZERO) return
 
-  // only remove the real rotational transform if present (i.e. at index=0)
-  if (tlist.numberOfItems > 0) {
-    const xform = tlist.getItem(0)
-    if (xform.type === 4) {
-      tlist.removeItem(0)
-    }
+  const oldValues = getTransformGeometryValues(elem)
+  const svgroot = svgCanvas.getSvgRoot()
+  const totalMatrix = transformListToTransform(tlist).matrix
+  const visualCenter = transformPoint(
+    cx,
+    cy,
+    totalMatrix
+  )
+  const centerX = Number.isFinite(visualCenter.x) ? visualCenter.x : cx
+  const centerY = Number.isFinite(visualCenter.y) ? visualCenter.y : cy
+  let remainingMatrix = totalMatrix
+
+  if (Math.abs(currentAngle) >= NEAR_ZERO) {
+    const currentRotation = svgroot.createSVGTransform()
+    currentRotation.setRotate(currentAngle, centerX, centerY)
+    remainingMatrix = matrixMultiply(currentRotation.matrix.inverse(), totalMatrix)
   }
-  // find Rnc and insert it
+
+  while (tlist.numberOfItems > 0) {
+    tlist.removeItem(0)
+  }
+
   if (val !== 0) {
-    const center = transformPoint(
-      cx,
-      cy,
-      transformListToTransform(tlist).matrix
-    )
-    // Safety check: if center coordinates are invalid (NaN), fall back to untransformed bbox center
-    const centerX = Number.isFinite(center.x) ? center.x : cx
-    const centerY = Number.isFinite(center.y) ? center.y : cy
-    const Rnc = svgCanvas.getSvgRoot().createSVGTransform()
+    const Rnc = svgroot.createSVGTransform()
     Rnc.setRotate(val, centerX, centerY)
-    if (tlist.numberOfItems) {
-      tlist.insertItemBefore(Rnc, 0)
-    } else {
-      tlist.appendItem(Rnc)
-    }
-  } else if (tlist.numberOfItems === 0) {
+    tlist.appendItem(Rnc)
+  }
+
+  if (!isIdentity(remainingMatrix)) {
+    const matrixTransform = svgroot.createSVGTransform()
+    matrixTransform.setMatrix(remainingMatrix)
+    tlist.appendItem(matrixTransform)
+  }
+
+  if (tlist.numberOfItems === 0) {
     elem.removeAttribute('transform')
   }
 
   if (!preventUndo) {
-    // we need to undo it, then redo it so it can be undo-able! :)
-    // TODO: figure out how to make changes to transform list undo-able cross-browser?
-    let newTransform = elem.getAttribute('transform')
-
-    // new transform is something like: 'rotate(5 1.39625e-8 -11)'
-    // we round the x so it becomes 'rotate(5 0 -11)'
-    // Only do this manipulation if the first transform is actually a rotation
-    if (newTransform && newTransform.startsWith('rotate(')) {
-      const match = newTransform.match(/^rotate\(([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\)(.*)/)
-      if (match) {
-        const angle = Number.parseFloat(match[1])
-        const round = (num) => Math.round(Number(num) + Number.EPSILON)
-        const x = round(match[2])
-        const y = round(match[3])
-        const restOfTransform = match[4] || '' // Preserve any transforms after the rotate
-        newTransform = `rotate(${angle} ${x} ${y})${restOfTransform}`
-      }
+    svgCanvas.recalculateDimensions(elem)
+    if (hasTransformGeometryChange(elem, oldValues)) {
+      svgCanvas.addCommandToHistory(
+        new ChangeElementCommand(elem, oldValues, 'transform')
+      )
     }
-
-    if (oldTransform) {
-      elem.setAttribute('transform', oldTransform)
-    } else {
-      elem.removeAttribute('transform')
-    }
-    svgCanvas.changeSelectedAttribute(
-      'transform',
-      newTransform,
-      selectedElements
-    )
     svgCanvas.call('changed', selectedElements)
   }
   // const pointGripContainer = getElement('pathpointgrip_container');

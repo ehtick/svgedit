@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { NS } from '../../packages/svgcanvas/core/namespaces.js'
 import { init as initEvent } from '../../packages/svgcanvas/core/event.js'
+import { init as initUtilities } from '../../packages/svgcanvas/core/utilities.js'
+import { getTransformList } from '../../packages/svgcanvas/core/math.js'
 
 const createSvgElement = (name) => {
   return document.createElementNS(NS.SVG, name)
@@ -83,6 +85,9 @@ describe('event', () => {
       getSvgRoot () {
         return svgcontent
       },
+      getId () {
+        return 'svg_1'
+      },
       getCurConfig () {
         return { gridSnapping: false, showRulers: false }
       },
@@ -134,6 +139,9 @@ describe('event', () => {
       pathActions: {
         clear () {}
       },
+      textActions: {
+        init () {}
+      },
       setRubberBox (box) {
         this.rubberBox = box
       },
@@ -146,6 +154,7 @@ describe('event', () => {
     }
 
     initEvent(canvas)
+    initUtilities(canvas)
   })
 
   afterEach(() => {
@@ -181,6 +190,151 @@ describe('event', () => {
     canvas.mouseOutEvent(new MouseEvent('mouseleave', { clientX: 15, clientY: 25 }))
 
     expect(received).toEqual({ x: 15, y: 25 })
+  })
+
+  it('mouseUpEvent() emits changed after drag cleanup updates selected element', () => {
+    const rect = /** @type {SVGRectElement} */ (createSvgElement('rect'))
+    rect.setAttribute('x', '10')
+    rect.setAttribute('y', '20')
+    rect.setAttribute('width', '30')
+    rect.setAttribute('height', '40')
+    contentGroup.append(rect)
+
+    const transform = svgcontent.createSVGTransform()
+    transform.setTranslate(5, 6)
+    rect.transform.baseVal.appendItem(transform)
+
+    const changedCalls = []
+    canvas.started = true
+    canvas.currentMode = 'select'
+    canvas.rStartX = 10
+    canvas.rStartY = 20
+    canvas.selectedElements = [rect]
+    canvas.dragStartTransforms = new Map([[rect, '']])
+    canvas.getSelectedElements = () => canvas.selectedElements
+    canvas.getRStartX = () => canvas.rStartX
+    canvas.getRStartY = () => canvas.rStartY
+    canvas.getJustSelected = () => null
+    canvas.setJustSelected = () => {}
+    canvas.setCurProperties = () => {}
+    canvas.setCurText = () => {}
+    canvas.selectorManager.requestSelector = () => ({
+      showGrips () {},
+      resize () {}
+    })
+    canvas.recalculateDimensions = () => ({ apply () {}, unapply () {} })
+    canvas.addCommandToHistory = () => {}
+    canvas.call = (name, payload) => {
+      if (name === 'changed') changedCalls.push(payload)
+    }
+
+    canvas.mouseUpEvent({
+      button: 0,
+      clientX: 15,
+      clientY: 26,
+      target: rect,
+      preventDefault () {}
+    })
+
+    expect(changedCalls).toEqual([[rect]])
+  })
+
+  it('mouseMoveEvent() does not add identity transform before drag threshold', () => {
+    const group = /** @type {SVGGElement} */ (createSvgElement('g'))
+    contentGroup.append(group)
+
+    canvas.started = true
+    canvas.currentMode = 'select'
+    canvas.startX = 10
+    canvas.startY = 20
+    canvas.selectedElements = [group]
+    canvas.getSelectedElements = () => canvas.selectedElements
+    canvas.selectorManager.requestSelector = () => ({
+      resize () {}
+    })
+    canvas.call = () => {}
+
+    canvas.mouseMoveEvent({
+      button: 0,
+      clientX: 10,
+      clientY: 20,
+      preventDefault () {}
+    })
+
+    expect(getTransformList(group).numberOfItems).toBe(0)
+    expect(group.getAttribute('transform')).toBeNull()
+  })
+
+  it('mouseMoveEvent() preserves existing leading translate when drag starts', () => {
+    const group = /** @type {SVGGElement} */ (createSvgElement('g'))
+    group.setAttribute('transform', 'translate(-165 -215)')
+    contentGroup.append(group)
+
+    canvas.started = true
+    canvas.currentMode = 'select'
+    canvas.startX = 10
+    canvas.startY = 20
+    canvas.selectedElements = [group]
+    canvas.getSelectedElements = () => canvas.selectedElements
+    canvas.selectorManager.requestSelector = () => ({
+      resize () {}
+    })
+    canvas.call = () => {}
+
+    canvas.mouseMoveEvent({
+      button: 0,
+      clientX: 12,
+      clientY: 23,
+      preventDefault () {}
+    })
+
+    const tlist = getTransformList(group)
+    expect(tlist.numberOfItems).toBe(2)
+    expect(tlist.getItem(0).type).toBe(SVGTransform.SVG_TRANSFORM_TRANSLATE)
+    expect(tlist.getItem(0).matrix.e).toBe(2)
+    expect(tlist.getItem(0).matrix.f).toBe(3)
+    expect(tlist.getItem(1).type).toBe(SVGTransform.SVG_TRANSFORM_TRANSLATE)
+    expect(tlist.getItem(1).matrix.e).toBe(-165)
+    expect(tlist.getItem(1).matrix.f).toBe(-215)
+  })
+
+  it('mouseUpEvent() emits final selected event after multiselect', () => {
+    const rect = /** @type {SVGRectElement} */ (createSvgElement('rect'))
+    const ellipse = /** @type {SVGEllipseElement} */ (createSvgElement('ellipse'))
+    contentGroup.append(rect, ellipse)
+
+    const selectedCalls = []
+    canvas.started = true
+    canvas.currentMode = 'multiselect'
+    canvas.rStartX = 10
+    canvas.rStartY = 20
+    canvas.selectedElements = [rect, ellipse]
+    canvas.getSelectedElements = () => canvas.selectedElements
+    canvas.getRStartX = () => canvas.rStartX
+    canvas.getRStartY = () => canvas.rStartY
+    canvas.setCurBBoxes = () => {}
+    canvas.getJustSelected = () => null
+    canvas.setJustSelected = () => {}
+    canvas.setCurProperties = () => {}
+    canvas.setCurText = () => {}
+    canvas.selectorManager.requestSelector = () => ({
+      showGrips () {},
+      resize () {}
+    })
+    canvas.call = (name, payload) => {
+      if (name === 'selected') selectedCalls.push(payload)
+    }
+
+    canvas.mouseUpEvent({
+      button: 0,
+      clientX: 10,
+      clientY: 20,
+      target: svgcontent,
+      preventDefault () {}
+    })
+
+    expect(canvas.currentMode).toBe('select')
+    expect(selectedCalls).toEqual([[rect, ellipse]])
   })
 
   it('mouseDownEvent() returns early if root group is missing', () => {

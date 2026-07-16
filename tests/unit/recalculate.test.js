@@ -2,6 +2,7 @@ import { NS } from '../../packages/svgcanvas/core/namespaces.js'
 import * as utilities from '../../packages/svgcanvas/core/utilities.js'
 import * as coords from '../../packages/svgcanvas/core/coords.js'
 import * as recalculate from '../../packages/svgcanvas/core/recalculate.js'
+import { getTransformList, transformListToTransform, transformPoint } from '../../packages/svgcanvas/core/math.js'
 
 describe('recalculate', function () {
   const root = document.createElement('div')
@@ -177,15 +178,15 @@ describe('recalculate', function () {
 
     recalculate.recalculateDimensions(elem)
 
-    // Ensure that the identity matrix is swallowed and the element has no
-    // transform on it.
-    assert.equal(elem.hasAttribute('transform'), false)
-    assert.equal(elem.getAttribute('x'), '300')
-    assert.equal(elem.getAttribute('y'), '200')
+    const tlist = getTransformList(elem)
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+    assert.equal(elem.getAttribute('x'), '200')
+    assert.equal(elem.getAttribute('y'), '150')
 
     const tspan = elem.firstElementChild
-    assert.equal(tspan.getAttribute('x'), '300')
-    assert.equal(tspan.getAttribute('y'), '200')
+    assert.equal(tspan.getAttribute('x'), '200')
+    assert.equal(tspan.getAttribute('y'), '150')
   })
 
   it('Test recalculateDimensions() on group with simple translate', function () {
@@ -575,8 +576,11 @@ describe('recalculate', function () {
 
     const cmd = recalculate.recalculateDimensions(use)
 
-    // Use elements return null to preserve referenced positioning
-    assert.equal(cmd, null)
+    assert.ok(cmd)
+    assert.equal(use.getAttribute('x'), '10')
+    assert.equal(use.getAttribute('y'), '10')
+    assert.equal(getTransformList(use).numberOfItems, 1)
+    assert.equal(getTransformList(use).getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
   })
 
   it('recalculateDimensions() handles use element with scale', () => {
@@ -591,8 +595,11 @@ describe('recalculate', function () {
 
     const cmd = recalculate.recalculateDimensions(use)
 
-    // Use elements return null to preserve referenced positioning
-    assert.equal(cmd, null)
+    assert.ok(cmd)
+    assert.equal(use.getAttribute('x'), '10')
+    assert.equal(use.getAttribute('y'), '10')
+    assert.equal(getTransformList(use).numberOfItems, 1)
+    assert.equal(getTransformList(use).getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
   })
 
   // Tests for group with rotation
@@ -600,11 +607,19 @@ describe('recalculate', function () {
     setUpGroupWithRect()
 
     elem.setAttribute('transform', 'rotate(45,35,25) translate(10,20)')
+    const box = utilities.getBBox(elem)
+    const cx = box.x + box.width / 2
+    const cy = box.y + box.height / 2
+    const expectedCenter = transformPoint(cx, cy, transformListToTransform(getTransformList(elem)).matrix)
 
     const cmd = recalculate.recalculateDimensions(elem)
+    const tlist = getTransformList(elem)
 
-    // Groups return null per line 146 - transforms stay on the group
-    assert.equal(cmd, null)
+    assert.ok(cmd)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.closeTo(tlist.getItem(0).angle, 45, 0.0001)
+    assert.closeTo(tlist.getItem(0).cx, expectedCenter.x, 0.0001)
+    assert.closeTo(tlist.getItem(0).cy, expectedCenter.y, 0.0001)
   })
 
   it('recalculateDimensions() handles group with matrix transform', () => {
@@ -638,10 +653,12 @@ describe('recalculate', function () {
     elem.setAttribute('transform', 'translate(-35,-35) scale(2,2) translate(35,35)')
 
     const cmd = recalculate.recalculateDimensions(elem)
+    const tlist = getTransformList(elem)
 
-    // Groups return null per line 146 - transforms stay on the group
-    assert.equal(cmd, null)
+    assert.ok(cmd)
     assert.equal(elem.hasAttribute('transform'), true)
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
   })
 
   // Tests for clip-path handling in groups
@@ -666,10 +683,13 @@ describe('recalculate', function () {
     elem.setAttribute('transform', 'translate(10,20)')
 
     const cmd = recalculate.recalculateDimensions(elem)
+    const tlist = getTransformList(elem)
 
-    // Groups return null per line 146
-    assert.equal(cmd, null)
+    assert.ok(cmd)
     assert.equal(elem.hasAttribute('transform'), true)
+    assert.equal(elem.getAttribute('clip-path'), 'url(#testClip)')
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
   })
 
   it('recalculateDimensions() handles child with clip-path in translated group', () => {
@@ -693,10 +713,12 @@ describe('recalculate', function () {
     elem.setAttribute('transform', 'translate(5,10)')
 
     const cmd = recalculate.recalculateDimensions(elem)
+    const tlist = getTransformList(elem)
 
-    // Groups return null per line 146
-    assert.equal(cmd, null)
-    assert.ok(rect !== null)
+    assert.ok(cmd)
+    assert.equal(rect.getAttribute('clip-path'), 'url(#childClip)')
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
   })
 
   // Edge case tests
@@ -952,6 +974,151 @@ describe('recalculate', function () {
     assert.ok(rect.getAttribute('width') !== null && rect.getAttribute('height') !== null)
   })
 
+  it('recalculateDimensions() bakes origin resize scale into rect attributes', () => {
+    setUp()
+
+    const rect = document.createElementNS(NS.SVG, 'rect')
+    rect.setAttribute('x', '0')
+    rect.setAttribute('y', '0')
+    rect.setAttribute('width', '100')
+    rect.setAttribute('height', '50')
+    rect.setAttribute('transform', 'translate(0,0) scale(2,3) translate(0,0)')
+    svg.append(rect)
+
+    const cmd = recalculate.recalculateDimensions(rect)
+
+    assert.ok(cmd)
+    assert.equal(rect.hasAttribute('transform'), false)
+    assert.equal(Number.parseFloat(rect.getAttribute('x')), 0)
+    assert.equal(Number.parseFloat(rect.getAttribute('y')), 0)
+    assert.equal(Number.parseFloat(rect.getAttribute('width')), 200)
+    assert.equal(Number.parseFloat(rect.getAttribute('height')), 150)
+  })
+
+  it('recalculateDimensions() bakes leading resize scale before existing matrix', () => {
+    setUp()
+
+    const rect = document.createElementNS(NS.SVG, 'rect')
+    rect.setAttribute('x', '100')
+    rect.setAttribute('y', '200')
+    rect.setAttribute('width', '300')
+    rect.setAttribute('height', '150')
+    rect.setAttribute('transform', 'translate(431.03, 459.308) scale(0.696529, 0.754075) translate(-431.03, -459.308) matrix(1.45876, 0, 0, 1.44048, 106.309, -288.918)')
+    svg.append(rect)
+
+    const cmd = recalculate.recalculateDimensions(rect)
+
+    assert.ok(cmd)
+    assert.equal(rect.hasAttribute('transform'), false)
+    assert.closeTo(Number.parseFloat(rect.getAttribute('x')), 306.459270995, 0.0001)
+    assert.closeTo(Number.parseFloat(rect.getAttribute('y')), 112.33547025, 0.0001)
+    assert.closeTo(Number.parseFloat(rect.getAttribute('width')), 304.820593212, 0.0001)
+    assert.closeTo(Number.parseFloat(rect.getAttribute('height')), 162.9344934, 0.0001)
+  })
+
+  it('recalculateDimensions() recenters rotation after dragging a rotated rect', () => {
+    setUp()
+
+    const rect = document.createElementNS(NS.SVG, 'rect')
+    rect.setAttribute('x', '137.77831532033395')
+    rect.setAttribute('y', '263.8726606472904')
+    rect.setAttribute('width', '249.92826829262793')
+    rect.setAttribute('height', '131.321305662981')
+    rect.setAttribute('transform', 'translate(20,35) rotate(65 262.7424494666479 329.5333134787809)')
+    svg.append(rect)
+
+    const cmd = recalculate.recalculateDimensions(rect)
+    const tlist = getTransformList(rect)
+    const box = utilities.getBBox(rect)
+
+    assert.ok(cmd)
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.closeTo(tlist.getItem(0).angle, 65, 0.0001)
+    assert.closeTo(tlist.getItem(0).cx, box.x + box.width / 2, 0.0001)
+    assert.closeTo(tlist.getItem(0).cy, box.y + box.height / 2, 0.0001)
+  })
+
+  it('recalculateDimensions() recenters rotation after resizing a rotated rect', () => {
+    setUp()
+
+    const rect = document.createElementNS(NS.SVG, 'rect')
+    rect.setAttribute('x', '137.77831532033395')
+    rect.setAttribute('y', '263.8726606472904')
+    rect.setAttribute('width', '249.92826829262793')
+    rect.setAttribute('height', '131.321305662981')
+    rect.setAttribute(
+      'transform',
+      'rotate(65 262.7424494666479 329.5333134787809) translate(387.7065836129619, 395.1939663102714) scale(1.35, 0.72) translate(-387.7065836129619, -395.1939663102714)'
+    )
+    svg.append(rect)
+
+    const cmd = recalculate.recalculateDimensions(rect)
+    const tlist = getTransformList(rect)
+    const box = utilities.getBBox(rect)
+
+    assert.ok(cmd)
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.closeTo(tlist.getItem(0).angle, 65, 0.0001)
+    assert.closeTo(tlist.getItem(0).cx, box.x + box.width / 2, 0.0001)
+    assert.closeTo(tlist.getItem(0).cy, box.y + box.height / 2, 0.0001)
+  })
+
+  it('recalculateDimensions() preserves rect matrix when rotation leaves off-axis residual transform', () => {
+    setUp()
+
+    const rect = document.createElementNS(NS.SVG, 'rect')
+    rect.setAttribute('x', '341.21')
+    rect.setAttribute('y', '117.57')
+    rect.setAttribute('width', '164.58')
+    rect.setAttribute('height', '158.86')
+    rect.setAttribute(
+      'transform',
+      'rotate(61.3756 592.809 298.08) matrix(1.00005 0 0 0.925179 249.217 60.6574) rotate(-21.4104 423.505 196.999)'
+    )
+    svg.append(rect)
+
+    const cmd = recalculate.recalculateDimensions(rect)
+    const tlist = getTransformList(rect)
+
+    assert.ok(cmd)
+    assert.equal(rect.getAttribute('x'), '341.21')
+    assert.equal(rect.getAttribute('y'), '117.57')
+    assert.equal(rect.getAttribute('width'), '164.58')
+    assert.equal(rect.getAttribute('height'), '158.86')
+    assert.equal(tlist.numberOfItems, 2)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.equal(tlist.getItem(1).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+  })
+
+  it('recalculateDimensions() preserves ellipse matrix when rotation leaves off-axis residual transform', () => {
+    setUp()
+
+    const ellipse = document.createElementNS(NS.SVG, 'ellipse')
+    ellipse.setAttribute('cx', '254')
+    ellipse.setAttribute('cy', '187')
+    ellipse.setAttribute('rx', '100.58')
+    ellipse.setAttribute('ry', '49.67')
+    ellipse.setAttribute(
+      'transform',
+      'rotate(61.3756 592.809 298.08) matrix(1.00005 0 0 0.925179 249.217 60.6574) rotate(71.4046 254 187)'
+    )
+    svg.append(ellipse)
+
+    const cmd = recalculate.recalculateDimensions(ellipse)
+    const tlist = getTransformList(ellipse)
+
+    assert.ok(cmd)
+    assert.equal(ellipse.getAttribute('cx'), '254')
+    assert.equal(ellipse.getAttribute('cy'), '187')
+    assert.equal(ellipse.getAttribute('rx'), '100.58')
+    assert.equal(ellipse.getAttribute('ry'), '49.67')
+    assert.equal(tlist.numberOfItems, 2)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.equal(tlist.getItem(1).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+  })
+
   it('recalculateDimensions() handles multiple transforms', () => {
     setUp()
 
@@ -1011,8 +1178,11 @@ describe('recalculate', function () {
 
     const cmd = recalculate.recalculateDimensions(use)
 
-    // use elements should preserve transforms
-    assert.equal(cmd, null)
+    assert.ok(cmd)
+    assert.equal(use.getAttribute('x'), '10')
+    assert.equal(use.getAttribute('y'), '10')
+    assert.equal(getTransformList(use).numberOfItems, 1)
+    assert.equal(getTransformList(use).getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
   })
 
   it('recalculateDimensions() handles foreignObject', () => {
@@ -1046,7 +1216,7 @@ describe('recalculate', function () {
     assert.ok(cmd !== undefined)
   })
 
-  it('recalculateDimensions() with matrix and rotation transforms', () => {
+  it('recalculateDimensions() bakes matrix and preserves rotation transform', () => {
     setUp()
 
     const rect = document.createElementNS(NS.SVG, 'rect')
@@ -1059,8 +1229,16 @@ describe('recalculate', function () {
 
     const cmd = recalculate.recalculateDimensions(rect)
 
-    // Should return null for matrix + rotation
-    assert.equal(cmd, null)
+    assert.ok(cmd)
+    assert.closeTo(Number.parseFloat(rect.getAttribute('x')), 20, 0.0001)
+    assert.closeTo(Number.parseFloat(rect.getAttribute('y')), 20, 0.0001)
+
+    const tlist = getTransformList(rect)
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.closeTo(tlist.getItem(0).angle, 45, 0.0001)
+    assert.closeTo(tlist.getItem(0).cx, 45, 0.0001)
+    assert.closeTo(tlist.getItem(0).cy, 45, 0.0001)
   })
 
   it('recalculateDimensions() handles group with rotation', () => {
@@ -1426,6 +1604,107 @@ describe('recalculate', function () {
     } catch (e) {
       assert.ok(true)
     }
+  })
+
+  it('recalculateDimensions() keeps text resize as matrix without changing font-size', () => {
+    setUp()
+
+    const text = document.createElementNS(NS.SVG, 'text')
+    text.setAttribute('x', '10')
+    text.setAttribute('y', '10')
+    text.setAttribute('font-size', '20')
+    text.textContent = 'Test'
+    text.setAttribute('transform', 'translate(5,5) scale(1.2,1.4)')
+    svg.append(text)
+
+    const cmd = recalculate.recalculateDimensions(text)
+    const tlist = getTransformList(text)
+
+    assert.ok(cmd)
+    assert.equal(text.getAttribute('font-size'), '20')
+    assert.equal(text.getAttribute('x'), '10')
+    assert.equal(text.getAttribute('y'), '10')
+    assert.equal(tlist.numberOfItems, 1)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+  })
+
+  it('recalculateDimensions() normalizes text to rotation followed by matrix', () => {
+    setUp()
+
+    const text = document.createElementNS(NS.SVG, 'text')
+    text.setAttribute('x', '10')
+    text.setAttribute('y', '10')
+    text.setAttribute('font-size', '20')
+    text.textContent = 'Test'
+    text.setAttribute('transform', 'translate(5,5) scale(1.2,1.4) rotate(30 10 10)')
+    svg.append(text)
+
+    const cmd = recalculate.recalculateDimensions(text)
+    const tlist = getTransformList(text)
+
+    assert.ok(cmd)
+    assert.equal(text.getAttribute('font-size'), '20')
+    assert.equal(tlist.numberOfItems, 2)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.equal(tlist.getItem(1).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+    assert.closeTo(tlist.getItem(0).angle, 30, 0.0001)
+  })
+
+  it('recalculateDimensions() recenters text rotation after drag', () => {
+    setUp()
+
+    const text = document.createElementNS(NS.SVG, 'text')
+    text.setAttribute('x', '10')
+    text.setAttribute('y', '10')
+    text.setAttribute('font-size', '20')
+    text.textContent = 'Test'
+    svg.append(text)
+
+    const box = utilities.getBBox(text)
+    const cx = box.x + box.width / 2
+    const cy = box.y + box.height / 2
+    text.setAttribute('transform', `translate(25,35) rotate(30 ${cx} ${cy}) matrix(1.1 0 0 1.1 4 6)`)
+    const expectedCenter = transformPoint(cx, cy, transformListToTransform(getTransformList(text)).matrix)
+
+    const cmd = recalculate.recalculateDimensions(text)
+    const tlist = getTransformList(text)
+
+    assert.ok(cmd)
+    assert.equal(tlist.numberOfItems, 2)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.equal(tlist.getItem(1).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+    assert.closeTo(tlist.getItem(0).cx, expectedCenter.x, 0.0001)
+    assert.closeTo(tlist.getItem(0).cy, expectedCenter.y, 0.0001)
+  })
+
+  it('recalculateDimensions() recenters text rotation after resize', () => {
+    setUp()
+
+    const text = document.createElementNS(NS.SVG, 'text')
+    text.setAttribute('x', '10')
+    text.setAttribute('y', '10')
+    text.setAttribute('font-size', '20')
+    text.textContent = 'Test'
+    svg.append(text)
+
+    const box = utilities.getBBox(text)
+    const cx = box.x + box.width / 2
+    const cy = box.y + box.height / 2
+    text.setAttribute(
+      'transform',
+      `rotate(30 ${cx} ${cy}) translate(${cx + 40}, ${cy + 20}) scale(1.3, 0.8) translate(${-cx - 40}, ${-cy - 20})`
+    )
+    const expectedCenter = transformPoint(cx, cy, transformListToTransform(getTransformList(text)).matrix)
+
+    const cmd = recalculate.recalculateDimensions(text)
+    const tlist = getTransformList(text)
+
+    assert.ok(cmd)
+    assert.equal(tlist.numberOfItems, 2)
+    assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
+    assert.equal(tlist.getItem(1).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+    assert.closeTo(tlist.getItem(0).cx, expectedCenter.x, 0.0001)
+    assert.closeTo(tlist.getItem(0).cy, expectedCenter.y, 0.0001)
   })
 
   it('recalculateDimensions() handles foreignObject with transform', () => {

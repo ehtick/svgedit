@@ -26,6 +26,168 @@ import {
 import { mergeDeep } from '../common/util.js'
 
 let svgCanvas
+const NEAR_ZERO = 1e-10
+
+const getRotationCenterFromTransform = (xform) => {
+  if (Number.isFinite(xform.cx) && Number.isFinite(xform.cy)) {
+    return { x: xform.cx, y: xform.cy }
+  }
+
+  const angle = (xform.angle * Math.PI) / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  const det = (1 - cos) * (1 - cos) + sin * sin
+
+  if (Math.abs(det) < NEAR_ZERO) {
+    return { x: 0, y: 0 }
+  }
+
+  const { e, f } = xform.matrix
+  return {
+    x: ((1 - cos) * e - sin * f) / det,
+    y: (sin * e + (1 - cos) * f) / det
+  }
+}
+
+const normalizeAngle = (angle) => {
+  while (angle > 180) angle -= 360
+  while (angle <= -180) angle += 360
+  return angle
+}
+
+const geometryLimitedElements = new Set([
+  'circle',
+  'ellipse',
+  'foreignObject',
+  'image',
+  'rect'
+])
+
+const hasOffAxisTransform = (matrix) => {
+  return Math.abs(matrix.b) > NEAR_ZERO || Math.abs(matrix.c) > NEAR_ZERO
+}
+
+const appendMatrixTransform = (tlist, svgroot, matrix) => {
+  const transform = svgroot.createSVGTransform()
+  transform.setMatrix(matrix)
+  tlist.appendItem(transform)
+}
+
+const getTransformSummary = (tlist) => {
+  let rotationAngle = 0
+  let rotationCenter = null
+
+  for (let i = 0; i < tlist.numberOfItems; i++) {
+    const xform = tlist.getItem(i)
+    if (xform.type === SVGTransform.SVG_TRANSFORM_ROTATE) {
+      rotationAngle += xform.angle
+      rotationCenter ||= getRotationCenterFromTransform(xform)
+    }
+  }
+
+  return {
+    rotationAngle: normalizeAngle(rotationAngle),
+    rotationCenter
+  }
+}
+
+const getNormalizedRotationCenter = (selected, summary, totalMatrix) => {
+  return getTransformedBBoxCenter(selected, totalMatrix) ||
+    summary.rotationCenter ||
+    { x: 0, y: 0 }
+}
+
+const getTransformedBBoxCenter = (selected, totalMatrix) => {
+  const box = getBBox(selected)
+  if (!box) return null
+
+  return transformPoint(
+    box.x + box.width / 2,
+    box.y + box.height / 2,
+    totalMatrix
+  )
+}
+
+const normalizeRetainedTransformList = (selected, tlist, svgroot) => {
+  if (!tlist) return
+
+  const totalMatrix = transformListToTransform(tlist).matrix
+  const summary = getTransformSummary(tlist)
+  const { rotationAngle } = summary
+  const rotationTransform = svgroot.createSVGTransform()
+  let remainingMatrix = totalMatrix
+
+  if (Math.abs(rotationAngle) >= NEAR_ZERO) {
+    const center = getNormalizedRotationCenter(selected, summary, totalMatrix)
+    rotationTransform.setRotate(rotationAngle, center.x, center.y)
+    remainingMatrix = matrixMultiply(rotationTransform.matrix.inverse(), totalMatrix)
+  }
+
+  while (tlist.numberOfItems > 0) {
+    tlist.removeItem(0)
+  }
+
+  if (Math.abs(rotationAngle) >= NEAR_ZERO) {
+    tlist.appendItem(rotationTransform)
+  }
+
+  if (!isIdentity(remainingMatrix)) {
+    appendMatrixTransform(tlist, svgroot, remainingMatrix)
+  }
+}
+
+const bakeTransformsIntoAttributes = (selected, changes, tlist, svgroot) => {
+  if (!tlist?.numberOfItems) return false
+
+  const totalMatrix = transformListToTransform(tlist).matrix
+  const summary = getTransformSummary(tlist)
+  const { rotationAngle } = summary
+  let bakeMatrix = totalMatrix
+  let rotationTransform = null
+
+  if (Math.abs(rotationAngle) > NEAR_ZERO) {
+    rotationTransform = svgroot.createSVGTransform()
+    const center = getNormalizedRotationCenter(selected, summary, totalMatrix)
+    rotationTransform.setRotate(rotationAngle, center.x, center.y)
+    bakeMatrix = matrixMultiply(rotationTransform.matrix.inverse(), totalMatrix)
+  }
+
+  if (geometryLimitedElements.has(selected.tagName) && hasOffAxisTransform(bakeMatrix)) {
+    normalizeRetainedTransformList(selected, tlist, svgroot)
+    return true
+  }
+
+  remapElement(selected, changes, bakeMatrix)
+  tlist.clear()
+
+  if (rotationTransform) {
+    tlist.appendItem(rotationTransform)
+  }
+
+  return true
+}
+
+const transformListSignature = (tlist) => {
+  if (!tlist) return ''
+  const parts = []
+  for (let i = 0; i < tlist.numberOfItems; i++) {
+    const xform = tlist.getItem(i)
+    const m = xform.matrix
+    parts.push([
+      xform.type,
+      xform.angle,
+      xform.cx,
+      xform.cy,
+      m.a,
+      m.b,
+      m.c,
+      m.d,
+      m.e,
+      m.f
+    ].map(value => Number.isFinite(value) ? Number(value).toFixed(8) : '').join(','))
+  }
+  return parts.join('|')
+}
 
 /**
  * Initialize the recalculate module with the SVG canvas.
@@ -141,9 +303,30 @@ export const updateClipPath = (attr, tx, ty, elem) => {
 export const recalculateDimensions = selected => {
   if (!selected) return null
 
-  // Don't recalculate dimensions for groups - this would push their transforms down to children
-  // Groups should maintain their transform attribute on the group element itself
   if (selected.tagName === 'g' || selected.tagName === 'a') {
+    const tlist = getTransformList(selected)
+    if (!tlist?.numberOfItems) return null
+
+    const summary = getTransformSummary(tlist)
+    if (
+      Math.abs(summary.rotationAngle) < NEAR_ZERO &&
+      tlist.numberOfItems === 1 &&
+      tlist.getItem(0).type === SVGTransform.SVG_TRANSFORM_MATRIX
+    ) {
+      return null
+    }
+
+    const before = transformListSignature(tlist)
+    const initial = { transform: svgCanvas.getStartTransform() || '' }
+    normalizeRetainedTransformList(selected, tlist, svgCanvas.getSvgRoot())
+    if (tlist.numberOfItems === 0) {
+      selected.removeAttribute('transform')
+    }
+    if (transformListSignature(tlist) !== before) {
+      const batchCmd = new BatchCommand('Transform')
+      batchCmd.addSubCommand(new ChangeElementCommand(selected, initial))
+      return batchCmd
+    }
     return null
   }
 
@@ -157,6 +340,7 @@ export const recalculateDimensions = selected => {
   const svgroot = svgCanvas.getSvgRoot()
   const dataStorage = svgCanvas.getDataStorage()
   const tlist = getTransformList(selected)
+  const preservesMatrix = ['text', 'tspan', 'use'].includes(selected.tagName)
 
   // Remove any unnecessary transforms (identity matrices, zero-degree rotations)
   if (tlist?.numberOfItems > 0) {
@@ -199,11 +383,6 @@ export const recalculateDimensions = selected => {
     return null
   }
 
-  // Avoid remapping transforms on <use> to preserve referenced positioning/rotation
-  if (selected.tagName === 'use') {
-    return null
-  }
-
   // Set up undo command
   const batchCmd = new BatchCommand('Transform')
 
@@ -216,16 +395,7 @@ export const recalculateDimensions = selected => {
     case 'path':
       break
     default:
-      // For elements like 'use', ensure transforms are handled correctly
-      if (
-        (tlist.numberOfItems === 1 &&
-          tlist.getItem(0).type === SVGTransform.SVG_TRANSFORM_MATRIX) ||
-        (tlist.numberOfItems === 2 &&
-          tlist.getItem(0).type === SVGTransform.SVG_TRANSFORM_MATRIX &&
-          tlist.getItem(1).type === SVGTransform.SVG_TRANSFORM_ROTATE)
-      ) {
-        return null
-      }
+      break
   }
 
   // Grouped SVG element (special handling for 'gsvg')
@@ -300,6 +470,19 @@ export const recalculateDimensions = selected => {
   }
   // Save the start transform value
   initial.transform = svgCanvas.getStartTransform() || ''
+
+  if (['text', 'tspan', 'use'].includes(selected.tagName)) {
+    const before = transformListSignature(tlist)
+    normalizeRetainedTransformList(selected, tlist, svgroot)
+    if (tlist.numberOfItems === 0) {
+      selected.removeAttribute('transform')
+    }
+    if (transformListSignature(tlist) !== before) {
+      batchCmd.addSubCommand(new ChangeElementCommand(selected, initial))
+      return batchCmd
+    }
+    return null
+  }
 
   let oldcenter, newcenter
 
@@ -628,6 +811,14 @@ export const recalculateDimensions = selected => {
       y = convertToNum('y', selected.getAttribute('y') || '0')
     }
 
+    if (!preservesMatrix && bakeTransformsIntoAttributes(selected, changes, tlist, svgroot)) {
+      if (tlist.numberOfItems === 0) {
+        selected.removeAttribute('transform')
+      }
+      batchCmd.addSubCommand(new ChangeElementCommand(selected, initial))
+      return batchCmd
+    }
+
     // Handle rotation transformations
     const angle = getRotationAngle(selected)
     if (angle) {
@@ -783,8 +974,7 @@ export const recalculateDimensions = selected => {
       }
     } else if (
       N === 1 &&
-      tlist.getItem(0).type === SVGTransform.SVG_TRANSFORM_MATRIX &&
-      !angle
+      tlist.getItem(0).type === SVGTransform.SVG_TRANSFORM_MATRIX
     ) {
       // Matrix operation
       m = transformListToTransform(tlist).matrix
@@ -806,6 +996,12 @@ export const recalculateDimensions = selected => {
       } else {
         // Remap other elements normally
         remapElement(selected, changes, m)
+      }
+
+      if (angle) {
+        const newRot = svgroot.createSVGTransform()
+        newRot.setRotate(angle, newcenter.x, newcenter.y)
+        tlist.appendItem(newRot)
       }
     } else {
       // Rotation or other transformations

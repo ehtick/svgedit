@@ -10,6 +10,7 @@ import { NS } from './namespaces.js'
 import { setUnitAttr, getTypeMap, shortFloat } from './units.js'
 import {
   hasMatrixTransform,
+  isIdentity,
   transformListToTransform,
   transformBox,
   getTransformList
@@ -1008,10 +1009,12 @@ export const getBBoxWithTransform = (
   const tlist = getTransformList(elem)
   const angle = getRotationAngleFromTransformList(tlist)
   const hasMatrixXForm = hasMatrixTransform(tlist)
+  const { matrix } = transformListToTransform(tlist)
+  const hasTransform = !isIdentity(matrix)
 
-  if (angle || hasMatrixXForm) {
+  if (hasTransform) {
     let goodBb = false
-    if (bBoxCanBeOptimizedOverNativeGetBBox(angle, hasMatrixXForm)) {
+    if ((angle || hasMatrixXForm) && bBoxCanBeOptimizedOverNativeGetBBox(angle, hasMatrixXForm)) {
       // Get the BBox from the raw path for these elements
       // TODO: why ellipse and not circle
       const elemNames = ['ellipse', 'path', 'line', 'polyline', 'polygon']
@@ -1044,7 +1047,6 @@ export const getBBoxWithTransform = (
     }
 
     if (!goodBb) {
-      const { matrix } = transformListToTransform(tlist)
       bb = transformBox(bb.x, bb.y, bb.width, bb.height, matrix).aabox
     }
   }

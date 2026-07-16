@@ -43,6 +43,7 @@ const {
 } = hstry
 
 let svgCanvas = null
+const NEAR_ZERO = 1e-10
 
 /**
  * @function module:selected-elem.init
@@ -231,7 +232,14 @@ const moveSelectedElements = (dx, dy, undoable = true) => {
         tlist.appendItem(xform)
       }
 
-      const cmd = recalculateDimensions(selected)
+      const oldStartTransform = svgCanvas.getStartTransform()
+      svgCanvas.setStartTransform(existingTransform)
+      let cmd
+      try {
+        cmd = recalculateDimensions(selected)
+      } finally {
+        svgCanvas.setStartTransform(oldStartTransform)
+      }
       if (cmd) {
         batchCmd.addSubCommand(cmd)
       } else if ((selected.getAttribute('transform') || '') !== existingTransform) {
@@ -668,8 +676,8 @@ const flipSelectedElements = (scaleX, scaleY) => {
 
     const tlist = getTransformList(selected)
     const combinedMatrix = matrixMultiply(
-      transformListToTransform(tlist).matrix,
-      flipMatrix
+      flipMatrix,
+      transformListToTransform(tlist).matrix
     )
 
     const flipTransform = svgRoot.createSVGTransform()
@@ -803,6 +811,68 @@ const groupSelectedElements = (type, urlArg) => {
 }
 
 /**
+ * Normalizes a child after a parent group's transform has been pushed onto it.
+ * @param {Element} elem
+ * @param {string|null} oldTransform
+ * @param {BatchCommand} batchCmd
+ * @param {boolean} undoable
+ * @returns {void}
+ */
+const normalizePushedGroupChild = (elem, oldTransform, batchCmd, undoable) => {
+  const oldTransformValue = oldTransform || ''
+  const oldStartTransform = svgCanvas.getStartTransform()
+  svgCanvas.setStartTransform(oldTransformValue)
+  let cmd
+  try {
+    cmd = recalculateDimensions(elem)
+  } finally {
+    svgCanvas.setStartTransform(oldStartTransform)
+  }
+
+  if (!cmd && (elem.getAttribute('transform') || '') !== oldTransformValue) {
+    cmd = new ChangeElementCommand(elem, { transform: oldTransformValue })
+  }
+
+  if (undoable && cmd) {
+    batchCmd.addSubCommand(cmd)
+  }
+}
+
+const getTransformRotationCenter = xform => {
+  if (Number.isFinite(xform.cx) && Number.isFinite(xform.cy)) {
+    return { x: xform.cx, y: xform.cy }
+  }
+
+  const angle = xform.angle * Math.PI / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  const det = (1 - cos) * (1 - cos) + sin * sin
+
+  if (Math.abs(det) < NEAR_ZERO) {
+    return { x: 0, y: 0 }
+  }
+
+  const { e, f } = xform.matrix
+  return {
+    x: ((1 - cos) * e - sin * f) / det,
+    y: (sin * e + (1 - cos) * f) / det
+  }
+}
+
+const clonePushedGroupTransform = xform => {
+  const clone = svgCanvas.getSvgRoot().createSVGTransform()
+
+  if (xform.type === SVGTransform.SVG_TRANSFORM_ROTATE) {
+    const { x, y } = getTransformRotationCenter(xform)
+    clone.setRotate(xform.angle, x, y)
+  } else {
+    clone.setMatrix(xform.matrix)
+  }
+
+  return clone
+}
+
+/**
  * Pushes all appropriate parent group properties down to its children, then
  * removes them from the group.
  * @function module:selected-elem.SvgCanvas#pushGroupProperty
@@ -816,7 +886,6 @@ const pushGroupProperty = (g, undoable) => {
   const xform = g.getAttribute('transform')
 
   const glist = getTransformList(g)
-  const m = transformListToTransform(glist).matrix
 
   const batchCmd = new BatchCommand('Push group properties')
 
@@ -919,6 +988,8 @@ const pushGroupProperty = (g, undoable) => {
     }
 
     if (glist.numberOfItems) {
+      const oldxform = elem.getAttribute('transform')
+
       // TODO: if the group's transform is just a rotate, we can always transfer the
       // rotate() down to the children (collapsing consecutive rotates and factoring
       // out any translates)
@@ -985,35 +1056,21 @@ const pushGroupProperty = (g, undoable) => {
         }
       } else {
         // more complicated than just a rotate
-        // transfer the group's transform down to each child and then
-        // call recalculateDimensions()
-        const oldxform = elem.getAttribute('transform')
-        changes = {}
-        changes.transform = oldxform || ''
+        // transfer the group's transform down to each child
 
-        // Simply prepend the group's transform to the child's transform list
+        // Prepend the group's transform items to the child's transform list
         // New transform = [group transform] [child transform]
-        // This preserves the correct application order
-        const newxform = svgCanvas.getSvgRoot().createSVGTransform()
-        newxform.setMatrix(m)
-
-        // Insert group's transform at the beginning of child's transform list
-        if (chtlist.numberOfItems) {
-          chtlist.insertItemBefore(newxform, 0)
-        } else {
-          chtlist.appendItem(newxform)
-        }
-
-        // Record the transform change for undo/redo
-        if (undoable) {
-          batchCmd.addSubCommand(new ChangeElementCommand(elem, changes))
+        // This preserves the correct application order and keeps rotate typed.
+        for (let j = glist.numberOfItems - 1; j >= 0; j--) {
+          const newxform = clonePushedGroupTransform(glist.getItem(j))
+          if (chtlist.numberOfItems) {
+            chtlist.insertItemBefore(newxform, 0)
+          } else {
+            chtlist.appendItem(newxform)
+          }
         }
       }
-      // NOTE: We intentionally do NOT call recalculateDimensions here because:
-      // 1. It reorders transforms (moves rotate before translate), changing the visual result
-      // 2. It recalculates rotation centers, causing elements to jump
-      // 3. The prepended group transform is already in the correct position
-      // Just leave the transforms as-is after prepending the group's transform
+      normalizePushedGroupChild(elem, oldxform, batchCmd, undoable)
     }
   }
 
