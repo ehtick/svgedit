@@ -67,9 +67,100 @@ export class SESpinInput extends HTMLElement {
     this.$div = this._shadowRoot.querySelector('div')
     this.$img = this._shadowRoot.querySelector('img')
     this.$label = this._shadowRoot.getElementById('label')
-    this.$event = new CustomEvent('change')
     this.$input = this._shadowRoot.querySelector('elix-number-spin-box')
     this.imgPath = svgEditor.configObj.curConfig.imgPath
+    this.committedValue = this.$input.value
+    this.manualEdit = false
+    this.inputEventsConnected = false
+  }
+
+  #isValidValue (value) {
+    const normalized = String(value).trim()
+    if (normalized === '') return false
+
+    const number = Number(normalized)
+    if (!Number.isFinite(number)) return false
+
+    const min = this.getAttribute('min')
+    const max = this.getAttribute('max')
+    return (min === null || number >= Number(min)) &&
+      (max === null || number <= Number(max))
+  }
+
+  #dispatchChange () {
+    this.dispatchEvent(new CustomEvent('change'))
+  }
+
+  #commitValue (value) {
+    if (!this.#isValidValue(value)) {
+      this.#revertValue()
+      return
+    }
+
+    this.value = value
+    this.committedValue = String(this.value)
+    this.manualEdit = false
+    this.#dispatchChange()
+  }
+
+  #revertValue () {
+    this.manualEdit = false
+    this.value = this.committedValue
+  }
+
+  #connectInputEvents () {
+    if (!this.isConnected || this.inputEventsConnected) return
+
+    const inputRoot = this.$input.shadowRoot
+    if (!inputRoot) return
+    this.inputEventsConnected = true
+
+    inputRoot.addEventListener('focus', (e) => {
+      const input = e.target
+      if (input?.id !== 'input') return
+      this.committedValue = String(this.value)
+      input.select()
+    }, true)
+    inputRoot.addEventListener('input', (e) => {
+      if (e.target?.id !== 'input') return
+      this.manualEdit = true
+    })
+    inputRoot.addEventListener('keydown', (e) => {
+      const input = e.target
+      if (input?.id !== 'input') return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        this.#commitValue(input.value)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        this.#revertValue()
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        this.manualEdit = false
+      }
+    })
+    inputRoot.addEventListener('blur', (e) => {
+      const input = e.target
+      if (input?.id !== 'input') return
+      if (this.manualEdit) {
+        this.#commitValue(input.value)
+      }
+    }, true)
+
+    inputRoot.addEventListener('mousedown', (e) => {
+      if (e.target?.id === 'upButton' || e.target?.id === 'downButton') {
+        this.manualEdit = false
+      }
+    }, { capture: true })
+
+    this.$input.addEventListener('change', (e) => {
+      e.preventDefault()
+      if (this.manualEdit) {
+        return
+      }
+      this.value = e.target.value
+      this.committedValue = String(this.value)
+      this.#dispatchChange()
+    })
   }
 
   /**
@@ -122,6 +213,9 @@ export class SESpinInput extends HTMLElement {
         break
       case 'value':
         this.$input.value = newValue
+        if (!this.manualEdit) {
+          this.committedValue = String(newValue)
+        }
         break
       default:
         console.error(`unknown attribute: ${name}`)
@@ -175,6 +269,9 @@ export class SESpinInput extends HTMLElement {
    */
   set value (value) {
     this.$input.value = value
+    if (!this.manualEdit) {
+      this.committedValue = String(value)
+    }
   }
 
   /**
@@ -214,29 +311,9 @@ export class SESpinInput extends HTMLElement {
    * @returns {void}
    */
   connectedCallback () {
-    const shadow = this.$input.shadowRoot
-    const childNodes = Array.from(shadow.childNodes)
-    childNodes.forEach((childNode) => {
-      if (childNode?.id === 'input') {
-        childNode.addEventListener('keyup', (e) => {
-          e.preventDefault()
-          if (!isNaN(e.target.value)) {
-            this.value = e.target.value
-            this.dispatchEvent(this.$event)
-          }
-        })
-      }
-    })
-    this.$input.addEventListener('change', (e) => {
-      e.preventDefault()
-      this.value = e.target.value
-      this.dispatchEvent(this.$event)
-    })
-    svgEditor.$click(this.$input, (e) => {
-      e.preventDefault()
-      this.value = e.target.value
-      this.dispatchEvent(this.$event)
-    })
+    // Descendant connected callbacks render the Elix shadow root synchronously.
+    // Wait until the current custom-element reaction stack has completed.
+    queueMicrotask(() => this.#connectInputEvents())
   }
 }
 

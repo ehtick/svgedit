@@ -268,6 +268,21 @@ describe('utilities bbox', function () {
     elem.remove()
   })
 
+  it('Test getBBoxWithTransform applies pure translate transforms', function () {
+    const { getBBoxWithTransform } = utilities
+
+    const elem = mockCreateSVGElement({
+      element: 'g',
+      attr: { id: 'translated-group', transform: 'translate(-386 287)' }
+    })
+    elem.getBBox = () => ({ x: 936, y: 40, width: 148, height: 64 })
+    svgroot.append(elem)
+
+    const bbox = getBBoxWithTransform(elem, mockaddSVGElementsFromJson, mockPathActions)
+
+    assert.deepEqual(bbox, { x: 550, y: 327, width: 148, height: 64 })
+  })
+
   it('Test getBBoxWithTransform with rotation and matrix transforms', function () {
     const { getBBoxWithTransform } = utilities
 

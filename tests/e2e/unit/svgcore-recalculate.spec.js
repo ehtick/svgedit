@@ -93,7 +93,8 @@ test.describe('SVG core recalculate', () => {
         },
         textAttrs: {
           x: text.getAttribute('x'),
-          y: text.getAttribute('y')
+          y: text.getAttribute('y'),
+          transform: text.getAttribute('transform')
         },
         tspanAttrs: {
           x: tspan.getAttribute('x'),
@@ -109,7 +110,9 @@ test.describe('SVG core recalculate', () => {
       width: '250',
       height: '120'
     })
-    expect(result.textAttrs).toEqual({ x: '300', y: '200' })
-    expect(result.tspanAttrs).toEqual({ x: '300', y: '200' })
+    expect(result.textAttrs.x).toBe('200')
+    expect(result.textAttrs.y).toBe('150')
+    expect(result.textAttrs.transform).toContain('matrix(1 0 0 1 100 50)')
+    expect(result.tspanAttrs).toEqual({ x: '200', y: '150' })
   })
 })

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { copyFile, mkdir, readdir, readFile, stat } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 
@@ -19,9 +19,24 @@ const run = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
   child.on('error', reject)
 })
 
+const runPackageCommand = (cmd, args, opts = {}) => {
+  if (process.platform === 'win32') {
+    return run(
+      process.env.ComSpec || 'cmd.exe',
+      ['/d', '/s', '/c', cmd, ...args],
+      opts
+    )
+  }
+
+  return run(cmd, args, opts)
+}
+
+const runNpm = (args, opts) => runPackageCommand('npm', args, opts)
+const runNpx = (args, opts) => runPackageCommand('npx', args, opts)
+
 const hasPlaywright = async () => {
   try {
-    await run('npx', ['playwright', '--version'], { timeout: 30000 })
+    await runNpx(['playwright', '--version'], { timeout: 30000 })
     return true
   } catch (error) {
     console.warn('Skipping e2e tests because Playwright is unavailable or failed to verify.')
@@ -33,7 +48,7 @@ const hasPlaywright = async () => {
 const ensureBrowser = async () => {
   // Download Chromium to the project cache if it's missing.
   if (!existsSync(playwrightCache)) {
-    await run('npx', ['playwright', 'install', 'chromium'])
+    await runNpx(['playwright', 'install', 'chromium'])
   }
 }
 
@@ -86,7 +101,7 @@ const ensureBuild = async () => {
 
   if (needsBuild) {
     console.log('Building dist/editor for Playwright preview...')
-    await run('npm', ['run', 'build'])
+    await runNpm(['run', 'build'])
   }
 }
 
@@ -102,8 +117,8 @@ const seedNycFromVitest = async () => {
 if (await hasPlaywright()) {
   await ensureBrowser()
   await ensureBuild()
-  await run('rimraf', ['.nyc_output/*'], { shell: true })
+  await rm(join(process.cwd(), '.nyc_output'), { recursive: true, force: true })
   await seedNycFromVitest()
-  await run('npx', ['playwright', 'test'])
-  await run('npx', ['nyc', 'report', '--reporter', 'text-summary', '--reporter', 'json-summary'])
+  await runNpx(['playwright', 'test'])
+  await runNpx(['nyc', 'report', '--reporter', 'text-summary', '--reporter', 'json-summary'])
 }

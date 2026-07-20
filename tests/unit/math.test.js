@@ -18,6 +18,9 @@ describe('math', function () {
     assert.ok(math, 'math module should exist')
     const expectedFunctions = [
       'transformPoint',
+      'normalizeRotationAngle',
+      'getRotationCenterFromRotateTransform',
+      'getRotationTransformSummary',
       'getTransformList',
       'isIdentity',
       'matrixMultiply',
@@ -34,6 +37,57 @@ describe('math', function () {
         `Expected "${fn}" to be a function`
       )
     })
+    assert.equal(math.NEAR_ZERO, 1e-10, 'Expected shared numeric tolerance')
+  })
+
+  it('normalizes rotation angles consistently', function () {
+    assert.equal(math.normalizeRotationAngle(540), 180)
+    assert.equal(math.normalizeRotationAngle(-180), 180)
+    assert.equal(math.normalizeRotationAngle('450'), 90)
+    assert.equal(math.normalizeRotationAngle(1e-12), 0)
+    assert.equal(math.normalizeRotationAngle('invalid'), 0)
+  })
+
+  it('recovers a rotation center from the transform matrix', function () {
+    const transform = svg.createSVGTransform()
+    transform.setRotate(45, 30, 40)
+    const center = math.getRotationCenterFromRotateTransform({
+      type: SVGTransform.SVG_TRANSFORM_ROTATE,
+      angle: transform.angle,
+      matrix: transform.matrix
+    })
+
+    assert.closeTo(center.x, 30, 1e-10)
+    assert.closeTo(center.y, 40, 1e-10)
+  })
+
+  it('rejects non-rotation transforms when reading a rotation center', function () {
+    const transform = svg.createSVGTransform()
+    transform.setMatrix(svg.createSVGMatrix().scale(2))
+
+    assert.throws(
+      () => math.getRotationCenterFromRotateTransform(transform),
+      TypeError,
+      'Expected an SVG rotation transform'
+    )
+  })
+
+  it('summarizes compound rotations from a transform list', function () {
+    const rect = document.createElementNS(NS.SVG, 'rect')
+    svg.appendChild(rect)
+    const first = svg.createSVGTransform()
+    first.setRotate(120, 30, 40)
+    const second = svg.createSVGTransform()
+    second.setRotate(90, 50, 60)
+    rect.transform.baseVal.appendItem(first)
+    rect.transform.baseVal.appendItem(second)
+
+    const summary = math.getRotationTransformSummary(rect.transform.baseVal)
+
+    assert.equal(summary.rotationAngle, -150)
+    assert.closeTo(summary.rotationCenter.x, 30, 1e-10)
+    assert.closeTo(summary.rotationCenter.y, 40, 1e-10)
+    rect.remove()
   })
 
   it('Test svgedit.math.transformPoint() function', function () {

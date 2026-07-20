@@ -23,7 +23,7 @@ import { NS } from './namespaces.js'
 import { warn } from '../common/logger.js'
 
 // Constants
-const NEAR_ZERO = 1e-10
+export const NEAR_ZERO = 1e-10
 
 // Create a throwaway SVG element for matrix operations
 const svg = document.createElementNS(NS.SVG, 'svg')
@@ -72,6 +72,80 @@ export const transformPoint = (x, y, m) => ({
   x: m.a * x + m.c * y + m.e,
   y: m.b * x + m.d * y + m.f
 })
+
+/**
+ * Normalizes a rotation angle to the (-180, 180] range.
+ * @function normalizeRotationAngle
+ * @param {number|string} angle - The angle in degrees
+ * @returns {number} The normalized angle, or zero for invalid input
+ */
+export const normalizeRotationAngle = (angle) => {
+  let normalized = Number.parseFloat(angle)
+  if (!Number.isFinite(normalized)) return 0
+  normalized %= 360
+  if (normalized > 180) normalized -= 360
+  if (normalized <= -180) normalized += 360
+  return Math.abs(normalized) < NEAR_ZERO ? 0 : normalized
+}
+
+/**
+ * Gets the center encoded by a typed SVG rotation transform.
+ * The transform matrix must come from `setRotate()` and therefore contain
+ * only rotation and the translation induced by its center.
+ * @function getRotationCenterFromRotateTransform
+ * @param {SVGTransform} transform - A typed SVG rotation transform
+ * @returns {XYObject} The rotation center
+ */
+export const getRotationCenterFromRotateTransform = (transform) => {
+  if (transform.type !== SVGTransform.SVG_TRANSFORM_ROTATE) {
+    throw new TypeError('Expected an SVG rotation transform')
+  }
+
+  if (Number.isFinite(transform.cx) && Number.isFinite(transform.cy)) {
+    return { x: transform.cx, y: transform.cy }
+  }
+
+  const angle = transform.angle * Math.PI / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  const det = (1 - cos) * (1 - cos) + sin * sin
+
+  if (Math.abs(det) < NEAR_ZERO) {
+    return { x: 0, y: 0 }
+  }
+
+  const { e, f } = transform.matrix
+  return {
+    x: ((1 - cos) * e - sin * f) / det,
+    y: (sin * e + (1 - cos) * f) / det
+  }
+}
+
+/**
+ * Gets the combined angle and first encoded center from a transform list.
+ * @function getRotationTransformSummary
+ * @param {SVGTransformList} tlist - The transform list
+ * @returns {{rotationAngle: number, rotationCenter: XYObject|null}} Rotation details
+ */
+export const getRotationTransformSummary = (tlist) => {
+  let rotationAngle = 0
+  let rotationCenter = null
+
+  if (tlist) {
+    for (let i = 0; i < tlist.numberOfItems; i++) {
+      const transform = tlist.getItem(i)
+      if (transform.type === SVGTransform.SVG_TRANSFORM_ROTATE) {
+        rotationAngle += transform.angle
+        rotationCenter ||= getRotationCenterFromRotateTransform(transform)
+      }
+    }
+  }
+
+  return {
+    rotationAngle: normalizeRotationAngle(rotationAngle),
+    rotationCenter
+  }
+}
 
 /**
  * Gets the transform list (baseVal) from an element if it exists.

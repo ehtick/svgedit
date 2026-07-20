@@ -57,12 +57,23 @@ test.describe('Group transform preservation', () => {
       await page.keyboard.press('ArrowLeft')
     }
 
-    // Verify group transform still contains the original translate
+    // Group movement is consolidated into one matrix on the group.
     groupTransform = await selectedGroup.getAttribute('transform')
-    expect(groupTransform).toContain('translate(91.56')
-    expect(groupTransform).toContain('99.67')
-    // And now also has a translate for the movement
-    expect(groupTransform).toMatch(/translate\([^)]+\).*translate\([^)]+\)/)
+    expect(groupTransform).toMatch(/^matrix\(/)
+    expect(groupTransform).not.toContain('translate')
+    const movedTransform = await selectedGroup.evaluate((element) => {
+      const transform = element.transform.baseVal.getItem(0)
+      return {
+        count: element.transform.baseVal.numberOfItems,
+        type: transform.type,
+        e: transform.matrix.e,
+        f: transform.matrix.f
+      }
+    })
+    expect(movedTransform.count).toBe(1)
+    expect(movedTransform.type).toBe(1) // SVG_TRANSFORM_MATRIX
+    expect(movedTransform.e).toBeCloseTo(-8.44, 2)
+    expect(movedTransform.f).toBeCloseTo(99.67, 2)
 
     // Test 3: Rotate the group
     await page.locator('#angle').evaluate(el => {
@@ -71,11 +82,10 @@ test.describe('Group transform preservation', () => {
       input.dispatchEvent(new Event('change', { bubbles: true }))
     })
 
-    // Verify group transform has both rotate and original translate
+    // Rotation stays first and the remaining placement stays consolidated.
     groupTransform = await selectedGroup.getAttribute('transform')
-    expect(groupTransform).toContain('rotate(5')
-    expect(groupTransform).toContain('translate(91.56')
-    expect(groupTransform).toContain('99.67')
+    expect(groupTransform).toMatch(/^rotate\(5[^)]*\) matrix\(/)
+    expect(groupTransform).not.toContain('translate')
 
     // Verify child paths still have their own transforms
     const path1Transform = await page.locator('#svg_2').getAttribute('transform')
@@ -98,6 +108,8 @@ test.describe('Group transform preservation', () => {
 
     // Select the group by clicking the rect
     await page.locator('#testRect').click()
+    const group = page.locator('#testGroup')
+    const beforeMove = await group.boundingBox()
 
     // Move right 5 times
     for (let i = 0; i < 5; i++) {
@@ -109,10 +121,14 @@ test.describe('Group transform preservation', () => {
       await page.keyboard.press('ArrowDown')
     }
 
-    // Verify original transform is still there
-    const groupTransform = await page.locator('#testGroup').getAttribute('transform')
-    expect(groupTransform).toContain('translate(100')
-    expect(groupTransform).toContain('100)')
+    const afterMove = await group.boundingBox()
+    expect(afterMove.x - beforeMove.x).toBeCloseTo(50, 0)
+    expect(afterMove.y - beforeMove.y).toBeCloseTo(30, 0)
+
+    const groupTransform = await group.getAttribute('transform')
+    expect(groupTransform).toMatch(/^matrix\(/)
+    expect((groupTransform.match(/matrix/g) || []).length).toBe(1)
+    expect(groupTransform).not.toContain('translate')
   })
 
   test('rotation followed by movement preserves both transforms', async ({ page }) => {
@@ -133,16 +149,21 @@ test.describe('Group transform preservation', () => {
       input.value = '45'
       input.dispatchEvent(new Event('change', { bubbles: true }))
     })
+    const group = page.locator('#testGroup')
+    const beforeMove = await group.boundingBox()
 
     // Then move
     await page.keyboard.press('ArrowLeft')
     await page.keyboard.press('ArrowLeft')
 
-    // Verify both rotate and translate are present
-    const groupTransform = await page.locator('#testGroup').getAttribute('transform')
-    expect(groupTransform).toContain('rotate(45')
-    expect(groupTransform).toContain('translate(200')
-    expect(groupTransform).toContain('150)')
+    const afterMove = await group.boundingBox()
+    expect(afterMove.x - beforeMove.x).toBeCloseTo(-20, 0)
+    expect(afterMove.y - beforeMove.y).toBeCloseTo(0, 0)
+
+    // Rotation stays separate and precedes the consolidated movement matrix.
+    const groupTransform = await group.getAttribute('transform')
+    expect(groupTransform).toMatch(/^rotate\(45[^)]*\) matrix\(/)
+    expect(groupTransform).not.toContain('translate')
   })
 
   test('multiple movements preserve group structure without flattening', async ({ page }) => {
@@ -172,9 +193,9 @@ test.describe('Group transform preservation', () => {
 
     // Verify group still has transform attribute (not flattened to children)
     let groupTransform = await page.locator('#testGroup').getAttribute('transform')
-    expect(groupTransform).toContain('translate')
-    // Verify original transform is preserved
-    expect(groupTransform).toContain('100')
+    expect(groupTransform).toMatch(/^matrix\(/)
+    expect((groupTransform.match(/matrix/g) || []).length).toBe(1)
+    expect(groupTransform).not.toContain('translate')
 
     // Most importantly: verify child has no transform (not flattened)
     let rectTransform = await rect.getAttribute('transform')
@@ -190,7 +211,9 @@ test.describe('Group transform preservation', () => {
 
     // Verify group still has transform
     groupTransform = await page.locator('#testGroup').getAttribute('transform')
-    expect(groupTransform).toContain('translate')
+    expect(groupTransform).toMatch(/^matrix\(/)
+    expect((groupTransform.match(/matrix/g) || []).length).toBe(1)
+    expect(groupTransform).not.toContain('translate')
 
     // Critical: child should STILL have no transform
     rectTransform = await rect.getAttribute('transform')
@@ -203,7 +226,9 @@ test.describe('Group transform preservation', () => {
 
     // Final verification: group has transforms, child does not
     groupTransform = await page.locator('#testGroup').getAttribute('transform')
-    expect(groupTransform).toContain('translate')
+    expect(groupTransform).toMatch(/^matrix\(/)
+    expect((groupTransform.match(/matrix/g) || []).length).toBe(1)
+    expect(groupTransform).not.toContain('translate')
     rectTransform = await rect.getAttribute('transform')
     expect(rectTransform).toBeNull()
   })

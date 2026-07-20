@@ -44,6 +44,7 @@ test.describe('SVG core recalculate extra cases', () => {
 
       const canvasStub = {
         getSvgRoot: () => svg,
+        getSvgContent: () => svg,
         getStartTransform: () => '',
         setStartTransform: () => {},
         getDataStorage: () => dataStorage,
@@ -52,6 +53,7 @@ test.describe('SVG core recalculate extra cases', () => {
 
       utilities.init({
         getSvgRoot: () => svg,
+        getSvgContent: () => svg,
         getDOMDocument: () => document,
         getDOMContainer: () => svg,
         getDataStorage: () => dataStorage
@@ -89,7 +91,7 @@ test.describe('SVG core recalculate extra cases', () => {
         rect: {
           width: rect.getAttribute('width'),
           height: rect.getAttribute('height'),
-          transformRemoved: rect.hasAttribute('transform')
+          hasTransform: rect.hasAttribute('transform')
         },
         flip: {
           width: rectFlip.getAttribute('width'),
@@ -101,7 +103,7 @@ test.describe('SVG core recalculate extra cases', () => {
 
     expect(Number(result.rect.width)).toBeGreaterThan(10)
     expect(Number(result.rect.height)).toBeGreaterThan(8)
-    expect(result.rect.transformRemoved).toBe(false) // scaling keeps transform list
+    expect(result.rect.hasTransform).toBe(false)
     expect(result.flip.fill.startsWith('url(')).toBe(true)
   })
 
@@ -162,6 +164,7 @@ test.describe('SVG core recalculate extra cases', () => {
       rect.setAttribute('height', '10')
       rect.setAttribute('transform', 'translate(10 5) rotate(30)')
       svg.append(rect)
+      const boxBefore = rect.getBoundingClientRect()
 
       const clipPath = document.createElementNS(NS, 'clipPath')
       clipPath.id = 'clip1'
@@ -174,6 +177,7 @@ test.describe('SVG core recalculate extra cases', () => {
       defs.append(clipPath)
 
       const cmd = recalculate.recalculateDimensions(rect)
+      const boxAfter = rect.getBoundingClientRect()
       recalculate.updateClipPath('url(#clip1)', 3, -2)
 
       return {
@@ -183,6 +187,20 @@ test.describe('SVG core recalculate extra cases', () => {
           transform: rect.getAttribute('transform'),
           hasCommand: Boolean(cmd)
         },
+        visualBounds: {
+          before: {
+            x: boxBefore.x,
+            y: boxBefore.y,
+            width: boxBefore.width,
+            height: boxBefore.height
+          },
+          after: {
+            x: boxAfter.x,
+            y: boxAfter.y,
+            width: boxAfter.width,
+            height: boxAfter.height
+          }
+        },
         clip: {
           x: clipRect.getAttribute('x'),
           y: clipRect.getAttribute('y'),
@@ -191,11 +209,13 @@ test.describe('SVG core recalculate extra cases', () => {
       }
     })
 
-    expect(result.rect.x).toBe('10')
-    expect(result.rect.y).toBe('5')
     expect(result.rect.transform).toContain('rotate(')
     expect(result.rect.transform).not.toContain('translate')
     expect(result.rect.hasCommand).toBe(true)
+    expect(result.visualBounds.after.x).toBeCloseTo(result.visualBounds.before.x, 5)
+    expect(result.visualBounds.after.y).toBeCloseTo(result.visualBounds.before.y, 5)
+    expect(result.visualBounds.after.width).toBeCloseTo(result.visualBounds.before.width, 5)
+    expect(result.visualBounds.after.height).toBeCloseTo(result.visualBounds.before.height, 5)
     expect(result.clip.x).toBe('3')
     expect(result.clip.y).toBe('-2')
     expect(result.clip.transforms).toBe(0)
@@ -288,9 +308,13 @@ test.describe('SVG core recalculate extra cases', () => {
         },
         rect: {
           x: rect.getAttribute('x'),
+          y: rect.getAttribute('y'),
           transform: rect.getAttribute('transform')
         },
-        useResult: cmdUse
+        use: {
+          hasCommand: Boolean(cmdUse),
+          transform: useElem.getAttribute('transform')
+        }
       }
     })
 
@@ -300,8 +324,10 @@ test.describe('SVG core recalculate extra cases', () => {
     expect(result.path.d.startsWith('M7,8')).toBe(true)
     expect(result.path.transform).toBe('')
     expect(result.path.hasCommand).toBe(true)
-    expect(result.rect.x).toBe('1')
-    expect(result.rect.transform).toContain('matrix')
-    expect(result.useResult).toBeNull()
+    expect(result.rect.x).toBe('8')
+    expect(result.rect.y).toBe('10')
+    expect(result.rect.transform).toBeNull()
+    expect(result.use.hasCommand).toBe(true)
+    expect(result.use.transform).toBe('matrix(1 0 0 1 3 4)')
   })
 })

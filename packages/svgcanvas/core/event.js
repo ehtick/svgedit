@@ -12,8 +12,9 @@ import {
   convertAttrs
 } from './units.js'
 import {
-  transformPoint, hasMatrixTransform, getMatrix, snapToAngle, getTransformList, transformListToTransform
+  transformPoint, hasMatrixTransform, getMatrix, snapToAngle, getTransformList
 } from './math.js'
+import { withStartTransform } from './recalculate.js'
 import * as draw from './draw.js'
 import * as pathModule from './path.js'
 import * as hstry from './history.js'
@@ -79,43 +80,43 @@ const getBsplinePoint = (t) => {
   }
 }
 
-// update the dummy transform in our transform list
-// to be a translate. We need to check if there was a transformation
-// to avoid loosing it
+const beginDragTransform = (svgRoot, selectedElements) => {
+  svgCanvas.dragStartTransforms = new Map()
+  for (const selectedElement of selectedElements) {
+    if (!selectedElement) { continue }
+    svgCanvas.dragStartTransforms.set(
+      selectedElement,
+      selectedElement.getAttribute('transform') || ''
+    )
+    const tlist = getTransformList(selectedElement)
+    if (!tlist) { continue }
+    const xform = svgRoot.createSVGTransform()
+    xform.setTranslate(0, 0)
+    if (tlist.numberOfItems) {
+      tlist.insertItemBefore(xform, 0)
+    } else {
+      tlist.appendItem(xform)
+    }
+  }
+  svgCanvas.hasDragStartTransform = true
+}
+
+// Update only the temporary drag transform inserted at index 0.
 const updateTransformList = (svgRoot, element, dx, dy) => {
   const xform = svgRoot.createSVGTransform()
   xform.setTranslate(dx, dy)
   const tlist = getTransformList(element)
   if (!tlist) { return }
   if (tlist.numberOfItems) {
-    const firstItem = tlist.getItem(0)
-    if (firstItem.type === SVGTransform.SVG_TRANSFORM_TRANSLATE) {
+    if (typeof tlist.replaceItem === 'function') {
       tlist.replaceItem(xform, 0)
     } else {
+      tlist.removeItem(0)
       tlist.insertItemBefore(xform, 0)
     }
   } else {
     tlist.appendItem(xform)
   }
-}
-
-// Consolidate an element's current transform list into a single matrix,
-// returning an undo command that restores `oldTransform`. Used for groups
-// (whose transform must stay on the group rather than be flattened into
-// their children) and as a fallback when recalculateDimensions() doesn't
-// recognize the transform-list shape a drag interaction left behind.
-const consolidateTransform = (svgRoot, elem, tlist, oldTransform) => {
-  const consolidatedMatrix = transformListToTransform(tlist).matrix
-
-  while (tlist.numberOfItems > 0) {
-    tlist.removeItem(0)
-  }
-
-  const newTransform = svgRoot.createSVGTransform()
-  newTransform.setMatrix(consolidatedMatrix)
-  tlist.appendItem(newTransform)
-
-  return new ChangeElementCommand(elem, { transform: oldTransform })
 }
 
 /**
@@ -167,31 +168,6 @@ const mouseMoveEvent = (evt) => {
   let tlist
   switch (svgCanvas.getCurrentMode()) {
     case 'select': {
-      // Insert dummy transform on first mouse move (drag start), not on click.
-      // This avoids creating multiple transforms that trigger unwanted flattening.
-      if (!svgCanvas.hasDragStartTransform && selectedElements.length > 0) {
-        // Store original transforms BEFORE adding the drag transform (for undo)
-        svgCanvas.dragStartTransforms = new Map()
-        for (const selectedElement of selectedElements) {
-          if (!selectedElement) { continue }
-          // Capture the transform attribute before we modify it
-          svgCanvas.dragStartTransforms.set(selectedElement, selectedElement.getAttribute('transform') || '')
-          const slist = getTransformList(selectedElement)
-          if (!slist) { continue }
-          // The dummy must already be a translate (not the default identity
-          // matrix) so updateTransformList's `firstItem.type === 2` check
-          // recognizes and replaces it in place on the very first mousemove,
-          // instead of leaving it behind as a stray extra transform item.
-          const dummy = svgRoot.createSVGTransform()
-          dummy.setTranslate(0, 0)
-          if (slist.numberOfItems) {
-            slist.insertItemBefore(dummy, 0)
-          } else {
-            slist.appendItem(dummy)
-          }
-        }
-        svgCanvas.hasDragStartTransform = true
-      }
       // we temporarily use a translate on the element(s) being dragged
       // this transform is removed upon mousing up and the element is
       // relocated to the new location
@@ -203,13 +179,16 @@ const mouseMoveEvent = (evt) => {
           dy = snapToGrid(dy)
         }
 
-        // Enable moving selection only if mouse has been moved at least 4 px in any direction
+        // Enable moving selection only if the pointer moved more than 4 px.
         // This prevents objects from being accidentally moved when (initially) selected
         const deltaThreshold = 4
         const deltaThresholdReached = Math.abs(dx) > deltaThreshold || Math.abs(dy) > deltaThreshold
         moveSelectionThresholdReached = moveSelectionThresholdReached || deltaThresholdReached
 
         if (moveSelectionThresholdReached) {
+          if (!svgCanvas.hasDragStartTransform) {
+            beginDragTransform(svgRoot, selectedElements)
+          }
           selectedElements.forEach((el) => {
             if (el) {
               updateTransformList(svgRoot, el, dx, dy)
@@ -630,6 +609,7 @@ const mouseOutEvent = (evt) => {
 */
 const mouseUpEvent = (evt) => {
   evt.preventDefault()
+  const didMoveSelection = moveSelectionThresholdReached || Boolean(svgCanvas.dragStartTransforms)
   moveSelectionThresholdReached = false
   if (evt.button === 2) { return }
   if (!svgCanvas.getStarted()) { return }
@@ -658,7 +638,8 @@ const mouseUpEvent = (evt) => {
   const useUnit = false // (svgCanvas.getCurConfig().baseUnit !== 'px');
   svgCanvas.setStarted(false)
   let t
-  switch (svgCanvas.getCurrentMode()) {
+  const mouseUpMode = svgCanvas.getCurrentMode()
+  switch (mouseUpMode) {
     // intentionally fall-through to select here
     case 'resize':
     case 'multiselect':
@@ -697,12 +678,17 @@ const mouseUpEvent = (evt) => {
           svgCanvas.selectorManager.requestSelector(selected).showGrips(true)
         }
         // if it was being dragged/resized
-        if (realX !== svgCanvas.getRStartX() || realY !== svgCanvas.getRStartY()) {
+        const hasPointerDelta = realX !== svgCanvas.getRStartX() || realY !== svgCanvas.getRStartY()
+        const shouldCommitTransform = mouseUpMode === 'select'
+          ? didMoveSelection
+          : hasPointerDelta
+        if (shouldCommitTransform) {
           // Only recalculate dimensions after actual dragging/resizing to avoid
           // unwanted transform flattening on simple clicks
 
           // Create a single batch command for all moved elements
           const batchCmd = new BatchCommand('position')
+          const changedElements = []
 
           selectedElements.forEach((elem) => {
             if (!elem) return
@@ -719,44 +705,30 @@ const mouseUpEvent = (evt) => {
               ? svgCanvas.dragStartTransforms.get(elem)
               : (svgCanvas.getStartTransform() || '')
 
-            // Check if the first transform is a translate (the drag transform we added)
-            const firstTransform = tlist.getItem(0)
-            const hasDragTranslate = firstTransform.type === SVGTransform.SVG_TRANSFORM_TRANSLATE
-
-            // recalculateDimensions() returns null for groups (their transform must stay
-            // on the group itself), so consolidate those directly into one matrix. For
-            // every other element type, recalculateDimensions() already understands the
-            // translate/scale/translate shape produced by a resize (and plain translate
-            // from a move), and flattening into it keeps the shape's real geometry
-            // attributes (x/y/width/height/rx/ry/points/d/etc.) in sync - which is what
-            // drives the coordinate/size panel inputs and keeps stroke width from being
-            // visually distorted by a leftover scale matrix.
-            const isGroup = elem.tagName === 'g' || elem.tagName === 'a'
-
-            if (isGroup && hasDragTranslate) {
-              batchCmd.addSubCommand(consolidateTransform(svgCanvas.getSvgRoot(), elem, tlist, oldTransform))
-              return
-            }
-
-            const cmd = svgCanvas.recalculateDimensions(elem)
+            // recalculateDimensions uses startTransform when building its undo command.
+            // Set it per element so multi-selection preserves every original transform.
+            const cmd = withStartTransform(
+              svgCanvas,
+              oldTransform,
+              () => svgCanvas.recalculateDimensions(elem)
+            )
             if (cmd) {
               batchCmd.addSubCommand(cmd)
-            } else if (tlist.numberOfItems > 1 && hasDragTranslate) {
-              // recalculateDimensions() didn't recognize this transform-list shape;
-              // fall back to consolidating into one matrix so the transform isn't lost.
-              batchCmd.addSubCommand(consolidateTransform(svgCanvas.getSvgRoot(), elem, tlist, oldTransform))
+              changedElements.push(elem)
             } else {
-              // recalculateDimensions returned null and there's nothing left to consolidate
-              // Check if the transform actually changed and record it manually
               const newTransform = elem.getAttribute('transform') || ''
               if (newTransform !== oldTransform) {
                 batchCmd.addSubCommand(new ChangeElementCommand(elem, { transform: oldTransform }))
+                changedElements.push(elem)
               }
             }
           })
 
           if (!batchCmd.isEmpty()) {
             svgCanvas.addCommandToHistory(batchCmd)
+          }
+          if (changedElements.length) {
+            svgCanvas.call('changed', changedElements)
           }
 
           // Clear the stored transforms AND reset the flag together
@@ -797,6 +769,9 @@ const mouseUpEvent = (evt) => {
             })
           }
         }
+      }
+      if (mouseUpMode === 'multiselect' && selectedElements.some(Boolean)) {
+        svgCanvas.call('selected', selectedElements)
       }
       return
     case 'zoom': {
@@ -1174,23 +1149,6 @@ const mouseDownEvent = (evt) => {
   svgCanvas.setStartTransform(mouseTarget.getAttribute('transform'))
 
   const tlist = getTransformList(mouseTarget)
-
-  // Consolidate transforms for non-group elements to simplify dragging
-  // For elements with multiple transforms (e.g., after ungrouping), consolidate them
-  // into a single matrix so the dummy translate can be properly applied during drag
-  if (tlist?.numberOfItems > 1 && mouseTarget.tagName !== 'g' && mouseTarget.tagName !== 'a') {
-    // Compute the consolidated matrix from all transforms
-    const consolidatedMatrix = transformListToTransform(tlist).matrix
-
-    // Clear the transform list and add a single matrix transform
-    while (tlist.numberOfItems > 0) {
-      tlist.removeItem(0)
-    }
-
-    const newTransform = svgCanvas.getSvgRoot().createSVGTransform()
-    newTransform.setMatrix(consolidatedMatrix)
-    tlist.appendItem(newTransform)
-  }
   switch (svgCanvas.getCurrentMode()) {
     case 'select':
       svgCanvas.setStarted(true)
