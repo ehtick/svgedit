@@ -14,6 +14,7 @@ import {
 import {
   transformPoint, hasMatrixTransform, getMatrix, snapToAngle, getTransformList
 } from './math.js'
+import { withStartTransform } from './recalculate.js'
 import * as draw from './draw.js'
 import * as pathModule from './path.js'
 import * as hstry from './history.js'
@@ -178,9 +179,9 @@ const mouseMoveEvent = (evt) => {
           dy = snapToGrid(dy)
         }
 
-        // Enable moving selection only after a deliberate pointer movement.
+        // Enable moving selection only if the pointer moved more than 4 px.
         // This prevents objects from being accidentally moved when (initially) selected
-        const deltaThreshold = 1
+        const deltaThreshold = 4
         const deltaThresholdReached = Math.abs(dx) > deltaThreshold || Math.abs(dy) > deltaThreshold
         moveSelectionThresholdReached = moveSelectionThresholdReached || deltaThresholdReached
 
@@ -706,22 +707,11 @@ const mouseUpEvent = (evt) => {
 
             // recalculateDimensions uses startTransform when building its undo command.
             // Set it per element so multi-selection preserves every original transform.
-            const hasStartTransformApi = typeof svgCanvas.getStartTransform === 'function' &&
-              typeof svgCanvas.setStartTransform === 'function'
-            const savedStartTransform = hasStartTransformApi
-              ? svgCanvas.getStartTransform()
-              : null
-            if (hasStartTransformApi) {
-              svgCanvas.setStartTransform(oldTransform)
-            }
-            let cmd
-            try {
-              cmd = svgCanvas.recalculateDimensions(elem)
-            } finally {
-              if (hasStartTransformApi) {
-                svgCanvas.setStartTransform(savedStartTransform)
-              }
-            }
+            const cmd = withStartTransform(
+              svgCanvas,
+              oldTransform,
+              () => svgCanvas.recalculateDimensions(elem)
+            )
             if (cmd) {
               batchCmd.addSubCommand(cmd)
               changedElements.push(elem)

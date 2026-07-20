@@ -1090,6 +1090,12 @@ describe('recalculate', function () {
     assert.equal(tlist.numberOfItems, 2)
     assert.equal(tlist.getItem(0).type, SVGTransform.SVG_TRANSFORM_ROTATE)
     assert.equal(tlist.getItem(1).type, SVGTransform.SVG_TRANSFORM_MATRIX)
+
+    const normalizedTransform = rect.getAttribute('transform')
+    const noOpCmd = recalculate.recalculateDimensions(rect)
+
+    assert.equal(noOpCmd, null)
+    assert.equal(rect.getAttribute('transform'), normalizedTransform)
   })
 
   it('recalculateDimensions() preserves ellipse matrix when rotation leaves off-axis residual transform', () => {

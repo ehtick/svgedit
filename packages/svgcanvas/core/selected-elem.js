@@ -31,7 +31,7 @@ import {
   getTransformList,
   getRotationCenterFromRotateTransform
 } from './math.js'
-import { recalculateDimensions } from './recalculate.js'
+import { recalculateDimensions, withStartTransform } from './recalculate.js'
 import { isGecko } from '../common/browser.js'
 import { getParents } from '../common/util.js'
 
@@ -232,14 +232,11 @@ const moveSelectedElements = (dx, dy, undoable = true) => {
         tlist.appendItem(xform)
       }
 
-      const oldStartTransform = svgCanvas.getStartTransform()
-      svgCanvas.setStartTransform(existingTransform)
-      let cmd
-      try {
-        cmd = recalculateDimensions(selected)
-      } finally {
-        svgCanvas.setStartTransform(oldStartTransform)
-      }
+      const cmd = withStartTransform(
+        svgCanvas,
+        existingTransform,
+        () => recalculateDimensions(selected)
+      )
       if (cmd) {
         batchCmd.addSubCommand(cmd)
       } else if ((selected.getAttribute('transform') || '') !== existingTransform) {
@@ -686,18 +683,11 @@ const flipSelectedElements = (scaleX, scaleY) => {
     tlist.clear()
     tlist.appendItem(flipTransform)
 
-    const prevStartTransform = svgCanvas.getStartTransform
-      ? svgCanvas.getStartTransform()
-      : null
-    if (svgCanvas.setStartTransform) {
-      svgCanvas.setStartTransform(existingTransform)
-    }
-
-    const cmd = recalculateDimensions(selected)
-
-    if (svgCanvas.setStartTransform) {
-      svgCanvas.setStartTransform(prevStartTransform)
-    }
+    const cmd = withStartTransform(
+      svgCanvas,
+      existingTransform,
+      () => recalculateDimensions(selected)
+    )
 
     if (cmd) {
       batchCmd.addSubCommand(cmd)
@@ -820,14 +810,11 @@ const groupSelectedElements = (type, urlArg) => {
  */
 const normalizePushedGroupChild = (elem, oldTransform, batchCmd, undoable) => {
   const oldTransformValue = oldTransform || ''
-  const oldStartTransform = svgCanvas.getStartTransform()
-  svgCanvas.setStartTransform(oldTransformValue)
-  let cmd
-  try {
-    cmd = recalculateDimensions(elem)
-  } finally {
-    svgCanvas.setStartTransform(oldStartTransform)
-  }
+  let cmd = withStartTransform(
+    svgCanvas,
+    oldTransformValue,
+    () => recalculateDimensions(elem)
+  )
 
   if (!cmd && (elem.getAttribute('transform') || '') !== oldTransformValue) {
     cmd = new ChangeElementCommand(elem, { transform: oldTransformValue })

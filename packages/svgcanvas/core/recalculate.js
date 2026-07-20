@@ -145,6 +145,13 @@ const transformListSignature = (tlist) => {
   return parts.join('|')
 }
 
+const elementTransformStateSignature = (selected, tlist, attributes) => {
+  return JSON.stringify([
+    transformListSignature(tlist),
+    attributes.map(attribute => [attribute, selected.getAttribute(attribute)])
+  ])
+}
+
 /**
  * Initialize the recalculate module with the SVG canvas.
  * @function module:recalculate.init
@@ -153,6 +160,16 @@ const transformListSignature = (tlist) => {
  */
 export const init = canvas => {
   svgCanvas = canvas
+}
+
+export const withStartTransform = (canvas, transform, callback) => {
+  const previousTransform = canvas.getStartTransform()
+  canvas.setStartTransform(transform)
+  try {
+    return callback()
+  } finally {
+    canvas.setStartTransform(previousTransform)
+  }
 }
 
 /**
@@ -767,12 +784,21 @@ export const recalculateDimensions = selected => {
       y = convertToNum('y', selected.getAttribute('y') || '0')
     }
 
-    if (!preservesMatrix && bakeTransformsIntoAttributes(selected, changes, tlist, svgroot)) {
-      if (tlist.numberOfItems === 0) {
-        selected.removeAttribute('transform')
+    if (!preservesMatrix) {
+      const geometryAttributes = Object.keys(initial).filter(attribute => attribute !== 'transform')
+      const before = elementTransformStateSignature(selected, tlist, geometryAttributes)
+
+      if (bakeTransformsIntoAttributes(selected, changes, tlist, svgroot)) {
+        if (tlist.numberOfItems === 0) {
+          selected.removeAttribute('transform')
+        }
+        const after = elementTransformStateSignature(selected, tlist, geometryAttributes)
+        if (after === before) {
+          return null
+        }
+        batchCmd.addSubCommand(new ChangeElementCommand(selected, initial))
+        return batchCmd
       }
-      batchCmd.addSubCommand(new ChangeElementCommand(selected, initial))
-      return batchCmd
     }
 
     // Handle rotation transformations

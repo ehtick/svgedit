@@ -59,6 +59,7 @@ describe('event', () => {
     canvas = {
       spaceKey: false,
       started: false,
+      startTransform: null,
       rootSctm: { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 },
       rubberBox: null,
       selectorManager: {
@@ -132,7 +133,12 @@ describe('event', () => {
       },
       setMode () {},
       setLastClickPoint () {},
-      setStartTransform () {},
+      getStartTransform () {
+        return this.startTransform
+      },
+      setStartTransform (transform) {
+        this.startTransform = transform
+      },
       clearSelection () {},
       setCurrentResizeMode () {},
       setJustSelected () {},
@@ -210,6 +216,7 @@ describe('event', () => {
     canvas.rStartX = 10
     canvas.rStartY = 20
     canvas.selectedElements = [rect]
+    canvas.startTransform = 'saved-transform'
     canvas.dragStartTransforms = new Map([[rect, '']])
     canvas.getSelectedElements = () => canvas.selectedElements
     canvas.getRStartX = () => canvas.rStartX
@@ -222,7 +229,11 @@ describe('event', () => {
       showGrips () {},
       resize () {}
     })
-    canvas.recalculateDimensions = () => ({ apply () {}, unapply () {} })
+    let startTransformDuringRecalculation
+    canvas.recalculateDimensions = () => {
+      startTransformDuringRecalculation = canvas.getStartTransform()
+      return { apply () {}, unapply () {} }
+    }
     canvas.addCommandToHistory = () => {}
     canvas.call = (name, payload) => {
       if (name === 'changed') changedCalls.push(payload)
@@ -237,6 +248,8 @@ describe('event', () => {
     })
 
     expect(changedCalls).toEqual([[rect]])
+    expect(startTransformDuringRecalculation).toBe('')
+    expect(canvas.getStartTransform()).toBe('saved-transform')
   })
 
   it('mouseMoveEvent() does not add identity transform before drag threshold', () => {
@@ -256,8 +269,8 @@ describe('event', () => {
 
     canvas.mouseMoveEvent({
       button: 0,
-      clientX: 10,
-      clientY: 20,
+      clientX: 14,
+      clientY: 24,
       preventDefault () {}
     })
 
@@ -283,16 +296,16 @@ describe('event', () => {
 
     canvas.mouseMoveEvent({
       button: 0,
-      clientX: 12,
-      clientY: 23,
+      clientX: 15,
+      clientY: 25,
       preventDefault () {}
     })
 
     const tlist = getTransformList(group)
     expect(tlist.numberOfItems).toBe(2)
     expect(tlist.getItem(0).type).toBe(SVGTransform.SVG_TRANSFORM_TRANSLATE)
-    expect(tlist.getItem(0).matrix.e).toBe(2)
-    expect(tlist.getItem(0).matrix.f).toBe(3)
+    expect(tlist.getItem(0).matrix.e).toBe(5)
+    expect(tlist.getItem(0).matrix.f).toBe(5)
     expect(tlist.getItem(1).type).toBe(SVGTransform.SVG_TRANSFORM_TRANSLATE)
     expect(tlist.getItem(1).matrix.e).toBe(-165)
     expect(tlist.getItem(1).matrix.f).toBe(-215)
