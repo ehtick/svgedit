@@ -463,6 +463,9 @@ const setRotationAngle = (val, preventUndo) => {
   }
 
   if (!preventUndo) {
+    // Recalculation may bake transforms into geometry. Its returned command is
+    // intentionally not added separately: the command below captures the
+    // complete old-to-final geometry and transform state as one undo step.
     svgCanvas.recalculateDimensions(elem)
     if (hasTransformGeometryChange(elem, oldValues)) {
       svgCanvas.addCommandToHistory(
